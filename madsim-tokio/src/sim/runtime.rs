@@ -1,13 +1,12 @@
-
-use std::io;
 use std::future::Future;
+use std::io;
 
 pub struct Handle {}
 
 pub struct Runtime {}
 
 pub struct EnterGuard<'a> {
-    _lt: std::marker::PhantomData<&'a Handle>
+    _lt: std::marker::PhantomData<&'a Handle>,
 }
 
 #[derive(Clone, Debug, Hash, Eq, PartialEq)]
@@ -15,7 +14,7 @@ pub struct Id(u64);
 
 pub struct JoinHandle<T> {
     _raw: (),
-    id: Id,
+    _id: Id,
     _p: std::marker::PhantomData<T>,
 }
 

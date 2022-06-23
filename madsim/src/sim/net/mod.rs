@@ -37,6 +37,7 @@
 
 use log::*;
 use std::{
+    collections::{hash_map::Entry, HashMap},
     io,
     net::{IpAddr, Ipv4Addr, SocketAddr, ToSocketAddrs},
     sync::{Arc, Mutex},
@@ -51,7 +52,9 @@ use crate::{
     time::{Duration, TimeHandle},
 };
 
-mod network;
+/// network module
+#[allow(missing_docs)]
+pub mod network;
 #[cfg(feature = "rpc")]
 #[cfg_attr(docsrs, doc(cfg(feature = "rpc")))]
 pub mod rpc;
@@ -62,6 +65,7 @@ pub struct NetSim {
     network: Mutex<Network>,
     rand: GlobalRng,
     time: TimeHandle,
+    next_port_map: Mutex<HashMap<NodeId, u32>>,
 }
 
 impl plugin::Simulator for NetSim {
@@ -70,6 +74,7 @@ impl plugin::Simulator for NetSim {
             network: Mutex::new(Network::new(rand.clone(), time.clone(), config.net.clone())),
             rand: rand.clone(),
             time: time.clone(),
+            next_port_map: Mutex::new(HashMap::new()),
         }
     }
 
@@ -139,6 +144,23 @@ impl NetSim {
         let delay = Duration::from_micros(self.rand.with(|rng| rng.gen_range(0..5)));
         self.time.sleep(delay).await;
     }
+
+    /// Get the next unused port number for this node.
+    pub fn next_local_port(&self, node: NodeId) -> u32 {
+        let mut map = self.next_port_map.lock().unwrap();
+        match map.entry(node) {
+            Entry::Occupied(mut cur) => {
+                let cur = cur.get_mut();
+                *cur = cur.wrapping_add(1);
+                *cur
+            }
+            Entry::Vacant(e) => {
+                // ports start at 1, 0 is used for new connections (see poll_accept_internal)
+                e.insert(1);
+                1
+            }
+        }
+    }
 }
 
 /// An endpoint.
@@ -147,6 +169,16 @@ pub struct Endpoint {
     node: NodeId,
     addr: SocketAddr,
     peer: Option<SocketAddr>,
+}
+
+impl std::fmt::Debug for Endpoint {
+    fn fmt(&self, fmt: &mut std::fmt::Formatter) -> Result<(), std::fmt::Error> {
+        fmt.debug_struct("Endpoint")
+           .field("node", &self.node)
+           .field("addr", &self.addr)
+           .field("peer", &self.peer)
+           .finish()
+    }
 }
 
 impl Endpoint {
@@ -183,6 +215,11 @@ impl Endpoint {
             addr,
             peer: Some(peer),
         })
+    }
+
+    /// Allocate a new "port" number for this node. Ports are never reused.
+    pub fn allocate_local_port(&self) -> u32 {
+        self.net.next_local_port(self.node)
     }
 
     /// Returns the local socket address.
@@ -258,6 +295,7 @@ impl Endpoint {
     /// It is provided for use by other simulators.
     #[cfg_attr(docsrs, doc(cfg(madsim)))]
     pub async fn send_to_raw(&self, dst: SocketAddr, tag: u64, data: Payload) -> io::Result<()> {
+        trace!("send_to_raw {} -> {}, {}", self.addr, dst, tag);
         self.net
             .network
             .lock()

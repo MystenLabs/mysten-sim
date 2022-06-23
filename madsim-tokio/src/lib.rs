@@ -1,5 +1,5 @@
 #[cfg(not(madsim))]
-pub use tokio::*;
+pub use real_tokio::*;
 
 #[cfg(madsim)]
 pub use self::sim::*;
@@ -10,27 +10,28 @@ mod sim {
     // TODO: simulate `task_local`
 
     // simulated API
+    pub use madsim::task;
     #[cfg(feature = "rt")]
     pub use madsim::task::spawn;
     #[cfg(feature = "time")]
     pub use madsim::time;
     #[cfg(all(feature = "rt", feature = "macros"))]
     pub use madsim::{main, test};
-    pub use madsim::{net, task};
 
     pub mod net;
+    mod unix;
 
     // not simulated API
     // TODO: simulate `fs`
     #[cfg(feature = "fs")]
-    pub use tokio::fs;
+    pub use real_tokio::fs;
     #[cfg(feature = "process")]
-    pub use tokio::process;
+    pub use real_tokio::process;
     #[cfg(feature = "signal")]
-    pub use tokio::signal;
+    pub use real_tokio::signal;
     #[cfg(feature = "sync")]
-    pub use tokio::sync;
-    pub use tokio::{io, pin};
+    pub use real_tokio::sync;
+    pub use real_tokio::{io, pin};
     #[cfg(feature = "macros")]
-    pub use tokio::{join, select, try_join};
+    pub use real_tokio::{join, select, try_join};
 }

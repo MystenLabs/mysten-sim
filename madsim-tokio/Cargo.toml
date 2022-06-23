@@ -31,34 +31,37 @@ full = [
   "time",
 ]
 
-fs = ["tokio/fs"]
-io-util = ["tokio/io-util"]
-io-std = ["tokio/io-std"]
-macros = ["tokio/macros"]
-net = ["tokio/net"]
-parking_lot = ["tokio/parking_lot"]
-process = ["tokio/process"]
-rt = ["tokio/rt"]
-rt-multi-thread = ["tokio/rt-multi-thread"]
-signal = ["tokio/signal"]
-sync = ["tokio/sync"]
-time = ["tokio/time"]
-test-util = ["tokio/test-util"]
-tracing = ["tokio/tracing"]
-bytes = ["tokio/bytes"]
-libc = ["tokio/libc"]
-memchr = ["tokio/memchr"]
-mio = ["tokio/mio"]
-num_cpus = ["tokio/num_cpus"]
-once_cell = ["tokio/once_cell"]
-signal-hook-registry = ["tokio/signal-hook-registry"]
-socket2 = ["tokio/socket2"]
-stats = ["tokio/stats"]
-tokio-macros = ["tokio/tokio-macros"]
+fs = ["real_tokio/fs"]
+io-util = ["real_tokio/io-util"]
+io-std = ["real_tokio/io-std"]
+macros = ["real_tokio/macros"]
+net = ["real_tokio/net"]
+parking_lot = ["real_tokio/parking_lot"]
+process = ["real_tokio/process"]
+rt = ["real_tokio/rt"]
+rt-multi-thread = ["real_tokio/rt-multi-thread"]
+signal = ["real_tokio/signal"]
+sync = ["real_tokio/sync"]
+time = ["real_tokio/time"]
+test-util = ["real_tokio/test-util"]
+tracing = ["real_tokio/tracing"]
+bytes = ["real_tokio/bytes"]
+libc = ["real_tokio/libc"]
+memchr = ["real_tokio/memchr"]
+mio = ["real_tokio/mio"]
+num_cpus = ["real_tokio/num_cpus"]
+once_cell = ["real_tokio/once_cell"]
+signal-hook-registry = ["real_tokio/signal-hook-registry"]
+socket2 = ["real_tokio/socket2"]
+stats = ["real_tokio/stats"]
+tokio-macros = ["real_tokio/tokio-macros"]
 
 
 [target.'cfg(madsim)'.dependencies]
 madsim = { version = "=0.2.0-alpha.3", path = "../madsim" }
 
 [dependencies]
-tokio = { path = "../tokio/tokio", package = "real_tokio" }
+log = "0.4"
+real_tokio = { path = "../tokio/tokio", package = "real_tokio" }
+bytes = { version = "1.1" }
+futures = { version = "0.3.0", features = ["async-await"] }
