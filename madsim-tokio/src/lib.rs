@@ -6,6 +6,7 @@ pub use self::sim::*;
 #[cfg(madsim)]
 mod sim {
     // no mod `runtime`
+    pub mod runtime;
     // TODO: simulate `task_local`
 
     // simulated API
@@ -16,6 +17,8 @@ mod sim {
     #[cfg(all(feature = "rt", feature = "macros"))]
     pub use madsim::{main, test};
     pub use madsim::{net, task};
+
+    pub mod net;
 
     // not simulated API
     // TODO: simulate `fs`

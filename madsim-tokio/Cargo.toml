@@ -1,6 +1,6 @@
 [package]
-name = "madsim-tokio"
-version = "0.2.0-alpha.3"
+name = "tokio"
+version = "1.19.2"
 edition = "2021"
 authors = ["Runji Wang <wangrunji0408@163.com>"]
 description = "The `tokio` simulator on madsim."
@@ -14,36 +14,51 @@ license = "Apache-2.0"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [features]
-# tokio features
-full = ["tokio/full"]
+default = []
+
+full = [
+  "fs",
+  "io-util",
+  "io-std",
+  "macros",
+  "net",
+  "parking_lot",
+  "process",
+  "rt",
+  "rt-multi-thread",
+  "signal",
+  "sync",
+  "time",
+]
+
 fs = ["tokio/fs"]
 io-util = ["tokio/io-util"]
 io-std = ["tokio/io-std"]
 macros = ["tokio/macros"]
 net = ["tokio/net"]
+parking_lot = ["tokio/parking_lot"]
 process = ["tokio/process"]
 rt = ["tokio/rt"]
 rt-multi-thread = ["tokio/rt-multi-thread"]
 signal = ["tokio/signal"]
 sync = ["tokio/sync"]
-test-util = ["tokio/test-util"]
 time = ["tokio/time"]
+test-util = ["tokio/test-util"]
+tracing = ["tokio/tracing"]
+bytes = ["tokio/bytes"]
+libc = ["tokio/libc"]
+memchr = ["tokio/memchr"]
+mio = ["tokio/mio"]
+num_cpus = ["tokio/num_cpus"]
+once_cell = ["tokio/once_cell"]
+signal-hook-registry = ["tokio/signal-hook-registry"]
+socket2 = ["tokio/socket2"]
 stats = ["tokio/stats"]
+tokio-macros = ["tokio/tokio-macros"]
 
-# tokio optional dependencies
-bytes = []
-once_cell = []
-memchr = []
-mio = []
-socket2 = []
-num_cpus = []
-parking_lot = []
-libc = []
-signal-hook-registry = []
-tokio-macros = []
 
 [target.'cfg(madsim)'.dependencies]
 madsim = { version = "=0.2.0-alpha.3", path = "../madsim" }
 
 [dependencies]
-tokio = "1.18.2"
+tokio = { path = "../tokio/tokio", package = "real_tokio" }

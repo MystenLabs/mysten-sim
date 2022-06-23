@@ -405,6 +405,12 @@ impl fmt::Display for JoinError {
     }
 }
 
+impl std::error::Error for JoinError {
+    fn description(&self) -> &str {
+        "JoinError"
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
