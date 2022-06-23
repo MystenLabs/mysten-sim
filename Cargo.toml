@@ -8,3 +8,7 @@ members = [
     "madsim-norandom",
     "tonic-example",
 ]
+exclude = [
+    "tokio",
+    "tonic",
+]
