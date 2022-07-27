@@ -12,8 +12,6 @@ use real_tokio::io::{Interest, ReadBuf, Ready};
 
 use bytes::BufMut;
 
-use crate::poller::Poller;
-
 #[derive(Debug)]
 pub struct UdpSocket {
     ep: Arc<Endpoint>,
@@ -21,7 +19,7 @@ pub struct UdpSocket {
 }
 
 impl UdpSocket {
-    fn new_from_ep(ep: Arc<Endpoint>) -> Self {
+    fn new(ep: Arc<Endpoint>) -> Self {
         Self {
             ep,
             default_dest: Mutex::new(None),
@@ -50,11 +48,7 @@ impl UdpSocket {
 
     fn bind_addr(addr: SocketAddr) -> io::Result<UdpSocket> {
         let ep = Arc::new(Endpoint::bind_sync(addr)?);
-        Ok(Self::new_from_ep(ep))
-    }
-
-    fn new(_socket: mio::net::UdpSocket) -> io::Result<UdpSocket> {
-        unimplemented!("cannot create udp socket from mio::net::UdpSocket")
+        Ok(Self::new(ep))
     }
 
     pub fn from_std(_socket: net::UdpSocket) -> io::Result<UdpSocket> {
@@ -85,7 +79,7 @@ impl UdpSocket {
         Ok(())
     }
 
-    pub async fn ready(&self, interest: Interest) -> io::Result<Ready> {
+    pub async fn ready(&self, _interest: Interest) -> io::Result<Ready> {
         todo!()
     }
 
@@ -94,19 +88,19 @@ impl UdpSocket {
         Ok(())
     }
 
-    pub fn poll_send_ready(&self, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+    pub fn poll_send_ready(&self, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
         todo!()
     }
 
-    pub async fn send(&self, buf: &[u8]) -> io::Result<usize> {
+    pub async fn send(&self, _buf: &[u8]) -> io::Result<usize> {
         todo!()
     }
 
-    pub fn poll_send(&self, cx: &mut Context<'_>, buf: &[u8]) -> Poll<io::Result<usize>> {
+    pub fn poll_send(&self, _cx: &mut Context<'_>, _buf: &[u8]) -> Poll<io::Result<usize>> {
         todo!()
     }
 
-    pub fn try_send(&self, buf: &[u8]) -> io::Result<usize> {
+    pub fn try_send(&self, _buf: &[u8]) -> io::Result<usize> {
         todo!()
     }
 
@@ -115,27 +109,27 @@ impl UdpSocket {
         Ok(())
     }
 
-    pub fn poll_recv_ready(&self, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+    pub fn poll_recv_ready(&self, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
         todo!()
     }
 
-    pub async fn recv(&self, buf: &mut [u8]) -> io::Result<usize> {
+    pub async fn recv(&self, _buf: &mut [u8]) -> io::Result<usize> {
         todo!()
     }
 
-    pub fn poll_recv(&self, cx: &mut Context<'_>, buf: &mut ReadBuf<'_>) -> Poll<io::Result<()>> {
+    pub fn poll_recv(&self, _cx: &mut Context<'_>, _buf: &mut ReadBuf<'_>) -> Poll<io::Result<()>> {
         todo!()
     }
 
-    pub fn try_recv(&self, buf: &mut [u8]) -> io::Result<usize> {
+    pub fn try_recv(&self, _buf: &mut [u8]) -> io::Result<usize> {
         todo!()
     }
 
-    pub fn try_recv_buf<B: BufMut>(&self, buf: &mut B) -> io::Result<usize> {
+    pub fn try_recv_buf<B: BufMut>(&self, _buf: &mut B) -> io::Result<usize> {
         todo!()
     }
 
-    pub fn try_recv_buf_from<B: BufMut>(&self, buf: &mut B) -> io::Result<(usize, SocketAddr)> {
+    pub fn try_recv_buf_from<B: BufMut>(&self, _buf: &mut B) -> io::Result<(usize, SocketAddr)> {
         todo!()
     }
 
@@ -153,53 +147,53 @@ impl UdpSocket {
 
     pub fn poll_send_to(
         &self,
-        cx: &mut Context<'_>,
-        buf: &[u8],
-        target: SocketAddr,
+        _cx: &mut Context<'_>,
+        _buf: &[u8],
+        _target: SocketAddr,
     ) -> Poll<io::Result<usize>> {
         todo!()
     }
 
-    pub fn try_send_to(&self, buf: &[u8], target: SocketAddr) -> io::Result<usize> {
+    pub fn try_send_to(&self, _buf: &[u8], _target: SocketAddr) -> io::Result<usize> {
         todo!()
     }
 
-    async fn send_to_addr(&self, buf: &[u8], target: SocketAddr) -> io::Result<usize> {
+    async fn send_to_addr(&self, _buf: &[u8], _target: SocketAddr) -> io::Result<usize> {
         todo!()
     }
 
-    pub async fn recv_from(&self, buf: &mut [u8]) -> io::Result<(usize, SocketAddr)> {
+    pub async fn recv_from(&self, _buf: &mut [u8]) -> io::Result<(usize, SocketAddr)> {
         todo!()
     }
 
     pub fn poll_recv_from(
         &self,
-        cx: &mut Context<'_>,
-        buf: &mut ReadBuf<'_>,
+        _cx: &mut Context<'_>,
+        _buf: &mut ReadBuf<'_>,
     ) -> Poll<io::Result<SocketAddr>> {
         todo!()
     }
 
-    pub fn try_recv_from(&self, buf: &mut [u8]) -> io::Result<(usize, SocketAddr)> {
+    pub fn try_recv_from(&self, _buf: &mut [u8]) -> io::Result<(usize, SocketAddr)> {
         todo!()
     }
 
     pub fn try_io<R>(
         &self,
-        interest: Interest,
-        f: impl FnOnce() -> io::Result<R>,
+        _interest: Interest,
+        _f: impl FnOnce() -> io::Result<R>,
     ) -> io::Result<R> {
         todo!()
     }
 
-    pub async fn peek_from(&self, buf: &mut [u8]) -> io::Result<(usize, SocketAddr)> {
+    pub async fn peek_from(&self, _buf: &mut [u8]) -> io::Result<(usize, SocketAddr)> {
         todo!()
     }
 
     pub fn poll_peek_from(
         &self,
-        cx: &mut Context<'_>,
-        buf: &mut ReadBuf<'_>,
+        _cx: &mut Context<'_>,
+        _buf: &mut ReadBuf<'_>,
     ) -> Poll<io::Result<SocketAddr>> {
         todo!()
     }
@@ -208,7 +202,7 @@ impl UdpSocket {
         unimplemented!("not supported in simulator")
     }
 
-    pub fn set_broadcast(&self, on: bool) -> io::Result<()> {
+    pub fn set_broadcast(&self, _on: bool) -> io::Result<()> {
         unimplemented!("not supported in simulator")
     }
 
@@ -216,7 +210,7 @@ impl UdpSocket {
         unimplemented!("not supported in simulator")
     }
 
-    pub fn set_multicast_loop_v4(&self, on: bool) -> io::Result<()> {
+    pub fn set_multicast_loop_v4(&self, _on: bool) -> io::Result<()> {
         unimplemented!("not supported in simulator")
     }
 
@@ -224,7 +218,7 @@ impl UdpSocket {
         unimplemented!("not supported in simulator")
     }
 
-    pub fn set_multicast_ttl_v4(&self, ttl: u32) -> io::Result<()> {
+    pub fn set_multicast_ttl_v4(&self, _ttl: u32) -> io::Result<()> {
         unimplemented!("not supported in simulator")
     }
 
@@ -232,7 +226,7 @@ impl UdpSocket {
         unimplemented!("not supported in simulator")
     }
 
-    pub fn set_multicast_loop_v6(&self, on: bool) -> io::Result<()> {
+    pub fn set_multicast_loop_v6(&self, _on: bool) -> io::Result<()> {
         unimplemented!("not supported in simulator")
     }
 
@@ -240,23 +234,23 @@ impl UdpSocket {
         unimplemented!("not supported in simulator")
     }
 
-    pub fn set_ttl(&self, ttl: u32) -> io::Result<()> {
+    pub fn set_ttl(&self, _ttl: u32) -> io::Result<()> {
         unimplemented!("not supported in simulator")
     }
 
-    pub fn join_multicast_v4(&self, multiaddr: Ipv4Addr, interface: Ipv4Addr) -> io::Result<()> {
+    pub fn join_multicast_v4(&self, _multiaddr: Ipv4Addr, _interface: Ipv4Addr) -> io::Result<()> {
         unimplemented!("not supported in simulator")
     }
 
-    pub fn join_multicast_v6(&self, multiaddr: &Ipv6Addr, interface: u32) -> io::Result<()> {
+    pub fn join_multicast_v6(&self, _multiaddr: &Ipv6Addr, _interface: u32) -> io::Result<()> {
         unimplemented!("not supported in simulator")
     }
 
-    pub fn leave_multicast_v4(&self, multiaddr: Ipv4Addr, interface: Ipv4Addr) -> io::Result<()> {
+    pub fn leave_multicast_v4(&self, _multiaddr: Ipv4Addr, _interface: Ipv4Addr) -> io::Result<()> {
         unimplemented!("not supported in simulator")
     }
 
-    pub fn leave_multicast_v6(&self, multiaddr: &Ipv6Addr, interface: u32) -> io::Result<()> {
+    pub fn leave_multicast_v6(&self, _multiaddr: &Ipv6Addr, _interface: u32) -> io::Result<()> {
         unimplemented!("not supported in simulator")
     }
 
