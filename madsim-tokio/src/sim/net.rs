@@ -2,13 +2,16 @@ use log::trace;
 
 use std::{
     io,
+    future::Future,
     net::{SocketAddr, ToSocketAddrs},
     pin::Pin,
+    os::unix::io::{FromRawFd, IntoRawFd, AsRawFd, RawFd},
     sync::{
         atomic::{AtomicU32, Ordering},
         Arc, Mutex,
     },
     task::{Context, Poll},
+    time::Duration,
 };
 
 use madsim::net::{network::Payload, Endpoint};
@@ -58,7 +61,10 @@ impl TcpListener {
     }
 
     async fn bind_addr(addr: SocketAddr) -> io::Result<Self> {
-        let ep = Arc::new(Endpoint::bind(addr).await?);
+        Self::bind_endpoint(Arc::new(Endpoint::bind(addr).await?))
+    }
+
+    fn bind_endpoint(ep: Arc<Endpoint>) -> io::Result<Self> {
         Ok(Self {
             ep,
             poller: Poller::new(),
@@ -104,6 +110,27 @@ impl TcpListener {
         let stream = TcpStream::new(state);
         Ok((stream, from))
     }
+
+    pub fn from_std(_listener: std::net::TcpListener) -> io::Result<TcpListener> {
+        unimplemented!("from_std not supported in simulator")
+    }
+
+    pub fn into_std(self) -> io::Result<std::net::TcpListener> {
+        unimplemented!("into_std not supported in simulator")
+    }
+
+    pub fn local_addr(&self) -> io::Result<SocketAddr> {
+        self.ep.local_addr()
+    }
+
+    pub fn ttl(&self) -> io::Result<u32> {
+        unimplemented!("ttl not supported in simulator")
+    }
+
+    pub fn set_ttl(&self, _ttl: u32) -> io::Result<()> {
+        unimplemented!("set_ttl not supported in simulator")
+    }
+
 }
 
 struct Buffer {
@@ -140,17 +167,20 @@ impl Buffer {
         &self.buffer[self.buffer_cursor..self.buffer.len()]
     }
 
-    fn read(&mut self, read: &mut ReadBuf<'_>) -> usize {
+    fn read(&mut self, is_poll: bool, read: &mut ReadBuf<'_>) -> usize {
         let remaining_bytes = self.remaining_bytes();
         let to_write = std::cmp::min(remaining_bytes, read.remaining());
         if to_write > 0 {
             read.put_slice(&self.buffer[self.buffer_cursor..(self.buffer_cursor + to_write)]);
         }
-        self.buffer_cursor += to_write;
 
-        if self.remaining_bytes() == 0 {
-            self.buffer_cursor = 0;
-            self.buffer.clear();
+        if !is_poll {
+            self.buffer_cursor += to_write;
+
+            if self.remaining_bytes() == 0 {
+                self.buffer_cursor = 0;
+                self.buffer.clear();
+            }
         }
 
         to_write
@@ -297,6 +327,14 @@ impl TcpStream {
         Ok(Self::new(state))
     }
 
+    pub fn peer_addr(&self) -> io::Result<SocketAddr> {
+        self.state.ep.peer_addr()
+    }
+
+    pub fn local_addr(&self) -> io::Result<SocketAddr> {
+        self.state.ep.local_addr()
+    }
+
     async fn read(state: Arc<TcpState>) -> io::Result<Buffer> {
         let tag = state.next_recv_tag();
 
@@ -328,15 +366,16 @@ impl TcpStream {
             .poll_with_fut(cx, || Self::write(self.state.clone(), buf.to_vec()))
     }
 
-    fn poll_read_priv(&self, cx: &mut Context<'_>, read: &mut ReadBuf<'_>) -> Poll<io::Result<()>> {
+    fn poll_read_priv(&self, is_poll: bool, cx: &mut Context<'_>, read: &mut ReadBuf<'_>) -> Poll<io::Result<usize>> {
         debug_assert_ne!(read.remaining(), 0);
 
         let mut buffer = self.buffer.lock().unwrap();
 
-        if buffer.read(read) > 0 {
+        let num_bytes = buffer.read(is_poll, read);
+        if num_bytes > 0 {
             // We might be able to read more from the network right now,
             // but for simplicity we just return immediately if there was anything in the buffer.
-            return Poll::Ready(Ok(()));
+            return Poll::Ready(Ok(num_bytes));
         }
 
         let poll = self
@@ -345,14 +384,45 @@ impl TcpStream {
 
         match poll {
             Poll::Ready(Ok(mut buf)) => {
-                // fill buffer with whatever we can, and save remainder for later.
-                buf.read(read);
+                // fill read with whatever we can, and save remainder for later.
+                let num_bytes = buf.read(is_poll, read);
                 buffer.write(buf);
-                Poll::Ready(Ok(()))
+                Poll::Ready(Ok(num_bytes))
             }
             Poll::Ready(Err(e)) => Poll::Ready(Err(e)),
             Poll::Pending => Poll::Pending,
         }
+    }
+
+    pub fn poll_peek(
+        &self,
+        cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<io::Result<usize>> {
+        self.poll_read_priv(true, cx, buf)
+    }
+
+    pub async fn peek(&self, buf: &mut [u8]) -> io::Result<usize> {
+        if buf.len() == 0 {
+            return Ok(0);
+        }
+
+        struct Fut<'a> {
+            buf: ReadBuf<'a>,
+            stream: &'a TcpStream,
+        }
+        impl<'a> Future for Fut<'a> {
+            type Output = io::Result<usize>;
+            fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+                self.stream.poll_peek(cx, &mut self.buf)
+            }
+        }
+
+        let mut buf = ReadBuf::new(buf);
+        buf.clear();
+
+        let fut = Fut { stream: self, buf };
+        fut.await
     }
 
     // flush and shutdown are no-ops
@@ -364,6 +434,30 @@ impl TcpStream {
         // TODO: implement?
         Poll::Ready(Ok(()))
     }
+
+    pub fn nodelay(&self) -> io::Result<bool> {
+        todo!()
+    }
+
+    pub fn set_nodelay(&self, _nodelay: bool) -> io::Result<()> {
+        todo!()
+    }
+
+    pub fn linger(&self) -> io::Result<Option<Duration>> {
+        todo!()
+    }
+
+    pub fn set_linger(&self, _dur: Option<Duration>) -> io::Result<()> {
+        todo!()
+    }
+
+    pub fn ttl(&self) -> io::Result<u32> {
+        todo!()
+    }
+
+    pub fn set_ttl(&self, _ttl: u32) -> io::Result<()> {
+        todo!()
+    }
 }
 
 impl AsyncRead for TcpStream {
@@ -372,7 +466,7 @@ impl AsyncRead for TcpStream {
         cx: &mut Context<'_>,
         read: &mut ReadBuf<'_>,
     ) -> Poll<io::Result<()>> {
-        self.poll_read_priv(cx, read)
+        self.poll_read_priv(false, cx, read).map(|r| r.map(|_| ()))
     }
 }
 
@@ -422,13 +516,19 @@ pub struct OwnedReadHalf {
     inner: Arc<TcpStream>,
 }
 
+impl OwnedReadHalf {
+    pub async fn peek(&self, buf: &mut [u8]) -> io::Result<usize> {
+        self.inner.peek(buf).await
+    }
+}
+
 impl AsyncRead for OwnedReadHalf {
     fn poll_read(
         self: Pin<&mut Self>,
         cx: &mut Context<'_>,
         read: &mut ReadBuf<'_>,
     ) -> Poll<io::Result<()>> {
-        self.inner.poll_read_priv(cx, read)
+        self.inner.poll_read_priv(false, cx, read).map(|r| r.map(|_| ()))
     }
 }
 
@@ -443,6 +543,138 @@ fn split_owned(stream: TcpStream) -> (OwnedReadHalf, OwnedWriteHalf) {
     };
     (read, write)
 }
+
+pub struct TcpSocket {
+    bind_addr: Mutex<Option<Endpoint>>,
+}
+
+impl TcpSocket {
+    // TODO: simulate v4/v6?
+    pub fn new_v4() -> io::Result<TcpSocket> {
+        TcpSocket::new()
+    }
+
+    pub fn new_v6() -> io::Result<TcpSocket> {
+        TcpSocket::new()
+    }
+
+    fn new() -> io::Result<TcpSocket> {
+        Ok(TcpSocket {
+            bind_addr: Mutex::new(None),
+        })
+    }
+
+    pub fn set_reuseaddr(&self, _reuseaddr: bool) -> io::Result<()> {
+        todo!()
+    }
+
+    pub fn reuseaddr(&self) -> io::Result<bool> {
+        todo!()
+    }
+
+    pub fn set_reuseport(&self, _reuseport: bool) -> io::Result<()> {
+        todo!()
+    }
+
+    pub fn reuseport(&self) -> io::Result<bool> {
+        todo!()
+    }
+
+    pub fn set_send_buffer_size(&self, _size: u32) -> io::Result<()> {
+        todo!()
+    }
+
+    pub fn send_buffer_size(&self) -> io::Result<u32> {
+        todo!()
+    }
+
+    pub fn set_recv_buffer_size(&self, _size: u32) -> io::Result<()> {
+        todo!()
+    }
+
+    pub fn recv_buffer_size(&self) -> io::Result<u32> {
+        todo!()
+    }
+
+    pub fn set_linger(&self, _dur: Option<Duration>) -> io::Result<()> {
+        todo!()
+    }
+
+    pub fn linger(&self) -> io::Result<Option<Duration>> {
+        todo!()
+    }
+
+    pub fn local_addr(&self) -> io::Result<SocketAddr> {
+        self.bind_addr
+            .lock()
+            .unwrap()
+            .as_ref()
+            .ok_or_else(|| io::Error::new(io::ErrorKind::NotConnected, "socket is not connected"))
+            .map(|ep| ep.local_addr().unwrap())
+    }
+
+    pub fn take_error(&self) -> io::Result<Option<io::Error>> {
+        todo!()
+    }
+
+    pub fn bind(&self, addr: SocketAddr) -> io::Result<()> {
+        let ep = Endpoint::bind_sync(addr)?;
+        *self.bind_addr.lock().unwrap() = Some(ep);
+        Ok(())
+    }
+
+    pub async fn connect(self, addr: SocketAddr) -> io::Result<TcpStream> {
+        TcpStream::connect(addr).await
+    }
+
+    pub fn listen(self, _backlog: u32) -> io::Result<TcpListener> {
+        let ep = Arc::new(self.bind_addr.into_inner().unwrap().ok_or_else(|| {
+            io::Error::new(io::ErrorKind::NotConnected, "socket is not connected")
+        })?);
+        TcpListener::bind_endpoint(ep)
+    }
+
+    pub fn from_std_stream(_std_stream: std::net::TcpStream) -> TcpSocket {
+        unimplemented!("from_std_stream not supported in simulator")
+    }
+}
+
+impl AsRawFd for TcpSocket {
+    fn as_raw_fd(&self) -> RawFd {
+        unimplemented!("as_raw_fd not supported in simulator")
+    }
+}
+
+impl FromRawFd for TcpSocket {
+    unsafe fn from_raw_fd(_fd: RawFd) -> TcpSocket {
+        unimplemented!("from_raw_fd not supported in simulator")
+    }
+}
+
+impl IntoRawFd for TcpSocket {
+    fn into_raw_fd(self) -> RawFd {
+        unimplemented!("into_raw_fd not supported in simulator")
+    }
+}
+
+impl AsRawFd for TcpStream {
+    fn as_raw_fd(&self) -> RawFd {
+        unimplemented!("as_raw_fd not supported in simulator")
+    }
+}
+
+impl FromRawFd for TcpStream {
+    unsafe fn from_raw_fd(_fd: RawFd) -> TcpStream {
+        unimplemented!("from_raw_fd not supported in simulator")
+    }
+}
+
+impl IntoRawFd for TcpStream {
+    fn into_raw_fd(self) -> RawFd {
+        unimplemented!("into_raw_fd not supported in simulator")
+    }
+}
+
 
 #[cfg(test)]
 mod tests {
@@ -465,7 +697,22 @@ mod tests {
         let mut next_read: u8 = 0;
 
         loop {
+            let peek_size = (rand.next_u32() % 0xff).try_into().unwrap();
+            let mut peek_buf = vec![0u8; peek_size];
+            let n = stream.peek(&mut peek_buf).await.unwrap();
+            let mut peek_next_read = next_read;
+            for byte in &peek_buf[0..n] {
+                if *byte == 0xff {
+                    break;
+                }
+                assert_eq!(*byte, peek_next_read);
+                peek_next_read += 1;
+                peek_next_read %= 0xfe;
+            }
+
+
             let read_size = (rand.next_u32() % 0xff).try_into().unwrap();
+
             let mut read_buf = BytesMut::with_capacity(read_size);
             stream.read_buf(&mut read_buf).await.unwrap();
 
