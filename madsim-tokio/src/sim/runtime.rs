@@ -4,11 +4,20 @@ use std::io;
 use madsim::runtime as ms_runtime;
 use madsim::task as ms_task;
 
-pub struct Handle {}
+pub struct Handle {
+    inner: ms_runtime::Handle,
+}
 
 pub struct TryCurrentError;
 
 impl Handle {
+    pub fn enter(&self) -> EnterGuard<'_> {
+        EnterGuard(
+            ms_runtime::Handle::current().enter(),
+            std::marker::PhantomData,
+        )
+    }
+
     pub fn try_current() -> Result<Self, TryCurrentError> {
         todo!();
     }
@@ -35,11 +44,17 @@ impl Drop for EnterGuard<'_> {
     }
 }
 
-pub struct Runtime {}
+pub struct Runtime {
+    handle: Handle,
+}
 
 impl Runtime {
     fn new() -> Self {
-        Self {}
+        Self {
+            handle: Handle {
+                inner: ms_runtime::Handle::current(),
+            },
+        }
     }
 
     pub fn block_on<F: Future>(&self, _future: F) -> F::Output {
@@ -48,11 +63,7 @@ impl Runtime {
     }
 
     pub fn enter(&self) -> EnterGuard<'_> {
-        // all tokio runtimes share the simulator runtime so there is nothing to enter.
-        EnterGuard(
-            ms_runtime::Handle::current().enter(),
-            std::marker::PhantomData,
-        )
+        self.handle.enter()
     }
 
     pub fn spawn<F>(&self, future: F) -> JoinHandle<F::Output>
@@ -67,11 +78,11 @@ impl Runtime {
 pub struct Builder {}
 
 impl Builder {
-    pub fn new() -> Self {
+    pub fn new_multi_thread() -> Self {
         todo!();
     }
 
-    pub fn new_multi_thread() -> Self {
+    pub fn new_current_thread() -> Self {
         todo!();
     }
 
