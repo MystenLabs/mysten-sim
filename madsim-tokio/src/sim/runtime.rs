@@ -1,22 +1,33 @@
 use std::future::Future;
 use std::io;
 
+use madsim::runtime as ms_runtime;
+use madsim::task as ms_task;
+
 pub struct Handle {}
 
-pub struct Runtime {}
+pub struct TryCurrentError;
 
-pub struct EnterGuard<'a> {
-    _lt: std::marker::PhantomData<&'a Handle>,
+impl Handle {
+    pub fn try_current() -> Result<Self, TryCurrentError> {
+        todo!();
+    }
+
+    pub fn spawn<F>(&self, future: F) -> JoinHandle<F::Output>
+    where
+        F: Future + Send + 'static,
+        F::Output: Send + 'static,
+    {
+        JoinHandle(ms_runtime::Handle::current_node().spawn(future))
+    }
 }
+
+pub struct EnterGuard<'a>(ms_runtime::EnterGuard, std::marker::PhantomData<&'a Handle>);
 
 #[derive(Clone, Debug, Hash, Eq, PartialEq)]
 pub struct Id(u64);
 
-pub struct JoinHandle<T> {
-    _raw: (),
-    _id: Id,
-    _p: std::marker::PhantomData<T>,
-}
+pub struct JoinHandle<T>(ms_task::JoinHandle<T>);
 
 impl Drop for EnterGuard<'_> {
     fn drop(&mut self) {
@@ -24,22 +35,32 @@ impl Drop for EnterGuard<'_> {
     }
 }
 
+pub struct Runtime {}
+
 impl Runtime {
+    fn new() -> Self {
+        Self {}
+    }
+
     pub fn block_on<F: Future>(&self, _future: F) -> F::Output {
+        // there may not be a good way to do this that doesn't deadlock the sim.
         todo!()
     }
 
     pub fn enter(&self) -> EnterGuard<'_> {
-        //self.handle.enter()
-        todo!()
+        // all tokio runtimes share the simulator runtime so there is nothing to enter.
+        EnterGuard(
+            ms_runtime::Handle::current().enter(),
+            std::marker::PhantomData,
+        )
     }
 
-    pub fn spawn<F>(&self, _future: F) -> JoinHandle<F::Output>
+    pub fn spawn<F>(&self, future: F) -> JoinHandle<F::Output>
     where
         F: Future + Send + 'static,
         F::Output: Send + 'static,
     {
-        todo!()
+        JoinHandle(ms_runtime::Handle::current_node().spawn(future))
     }
 }
 

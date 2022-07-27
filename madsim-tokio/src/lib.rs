@@ -3,6 +3,7 @@ pub use real_tokio::*;
 
 #[cfg(madsim)]
 pub use self::sim::*;
+
 #[cfg(madsim)]
 mod sim {
     // no mod `runtime`
@@ -19,6 +20,7 @@ mod sim {
     pub use madsim::{main, test};
 
     pub mod net;
+    mod udp;
     mod unix;
 
     // not simulated API
@@ -35,3 +37,6 @@ mod sim {
     #[cfg(feature = "macros")]
     pub use real_tokio::{join, select, try_join};
 }
+
+#[cfg(madsim)]
+mod poller;

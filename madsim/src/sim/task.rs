@@ -259,7 +259,7 @@ pub(crate) struct TaskNodeHandle {
 }
 
 impl TaskNodeHandle {
-    fn current() -> Self {
+    pub fn current() -> Self {
         let info = crate::context::current_task();
         let sender = crate::context::current(|h| h.task.sender.clone());
         TaskNodeHandle { sender, info }

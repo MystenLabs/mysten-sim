@@ -249,7 +249,21 @@ impl Handle {
     pub fn get_node(&self, id: NodeId) -> Option<NodeHandle> {
         self.task.get_node(id).map(|task| NodeHandle { task })
     }
+
+    /// Get handle to current Node
+    pub fn current_node() -> NodeHandle {
+        let task = task::TaskNodeHandle::current();
+        NodeHandle { task }
+    }
+
+    /// Mark this Handle as the currently active one
+    pub fn enter(self) -> EnterGuard {
+        EnterGuard(context::enter(self))
+    }
 }
+
+/// Guard for entering handle
+pub struct EnterGuard(context::EnterGuard);
 
 /// Builds a node with custom configurations.
 pub struct NodeBuilder<'a> {

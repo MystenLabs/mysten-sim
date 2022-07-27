@@ -1,6 +1,6 @@
 [package]
 name = "tokio"
-version = "1.19.2"
+version = "1.20.0"
 edition = "2021"
 authors = ["Runji Wang <wangrunji0408@163.com>"]
 description = "The `tokio` simulator on madsim."
@@ -65,3 +65,4 @@ log = "0.4"
 real_tokio = { path = "../tokio/tokio", package = "real_tokio" }
 bytes = { version = "1.1" }
 futures = { version = "0.3.0", features = ["async-await"] }
+mio = { version = "0.8.1" }

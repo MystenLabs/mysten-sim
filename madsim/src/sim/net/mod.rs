@@ -174,14 +174,28 @@ pub struct Endpoint {
 impl std::fmt::Debug for Endpoint {
     fn fmt(&self, fmt: &mut std::fmt::Formatter) -> Result<(), std::fmt::Error> {
         fmt.debug_struct("Endpoint")
-           .field("node", &self.node)
-           .field("addr", &self.addr)
-           .field("peer", &self.peer)
-           .finish()
+            .field("node", &self.node)
+            .field("addr", &self.addr)
+            .field("peer", &self.peer)
+            .finish()
     }
 }
 
 impl Endpoint {
+    /// Bind synchronously (for UDP)
+    pub fn bind_sync(addr: impl ToSocketAddrs) -> io::Result<Self> {
+        let net = plugin::simulator::<NetSim>();
+        let node = plugin::node();
+        let addr = addr.to_socket_addrs()?.next().unwrap();
+        let addr = net.network.lock().unwrap().bind(node, addr)?;
+        Ok(Endpoint {
+            net,
+            node,
+            addr,
+            peer: None,
+        })
+    }
+
     /// Creates a [`Endpoint`] from the given address.
     pub async fn bind(addr: impl ToSocketAddrs) -> io::Result<Self> {
         let net = plugin::simulator::<NetSim>();

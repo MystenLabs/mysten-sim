@@ -1,7 +1,6 @@
 use log::trace;
 
 use std::{
-    future::Future,
     io,
     net::{SocketAddr, ToSocketAddrs},
     pin::Pin,
@@ -16,40 +15,10 @@ use madsim::net::{network::Payload, Endpoint};
 
 use real_tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 
+pub use super::udp::*;
 pub use super::unix::*;
 
-type PollerPinFut<R> = Pin<Box<dyn Future<Output = R> + Send + Sync>>;
-struct Poller<R> {
-    p: Arc<Mutex<Option<PollerPinFut<R>>>>,
-}
-
-impl<R> Poller<R> {
-    fn new() -> Self {
-        Self {
-            p: Arc::new(Mutex::new(None)),
-        }
-    }
-
-    fn poll_with_fut<F, T>(&self, cx: &mut Context<'_>, fut_fn: F) -> Poll<R>
-    where
-        F: FnOnce() -> T,
-        T: Future<Output = R> + 'static + Send + Sync,
-    {
-        let mut poller = self.p.lock().unwrap();
-
-        if poller.is_none() {
-            *poller = Some(Box::pin(fut_fn()));
-        }
-
-        let fut: &mut PollerPinFut<R> = poller.as_mut().unwrap();
-        let res = fut.as_mut().poll(cx);
-
-        if let Poll::Ready(_) = res {
-            poller.take();
-        }
-        res
-    }
-}
+use crate::poller::Poller;
 
 /// Provide the tokio::net::TcpListener interface.
 pub struct TcpListener {
@@ -292,7 +261,7 @@ impl TcpStream {
 
     pub async fn connect<A: ToSocketAddrs>(addr: A) -> io::Result<TcpStream> {
         match TcpStream::connect_addr(addr).await {
-            Ok(stream) => return Ok(stream),
+            Ok(stream) => Ok(stream),
             Err(e) => Err(e),
         }
     }
