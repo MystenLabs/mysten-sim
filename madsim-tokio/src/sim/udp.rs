@@ -1,5 +1,3 @@
-use log::trace;
-
 use std::{
     io, net,
     net::{Ipv4Addr, Ipv6Addr, SocketAddr, ToSocketAddrs},

@@ -318,7 +318,6 @@ impl TaskNodeHandle {
         };
         runnable.schedule();
 
-        static NEXT_TASK_ID: AtomicU64 = AtomicU64::new(0);
         JoinHandle {
             id: runtime_task::next_task_id(),
             task: Mutex::new(Some(task.fallible())),

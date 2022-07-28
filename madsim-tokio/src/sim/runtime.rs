@@ -10,6 +10,7 @@ use log::debug;
 
 #[derive(Clone)]
 pub struct Handle {
+    #[allow(dead_code)]
     inner: ms_runtime::Handle,
 }
 
@@ -263,7 +264,7 @@ impl Builder {
     }
 
     fn build_basic_runtime(&mut self) -> io::Result<Runtime> {
-        todo!()
+        Ok(Runtime::new())
     }
 
     pub fn enable_io(&mut self) -> &mut Self {
@@ -282,7 +283,11 @@ impl Builder {
     }
 
     fn build_threaded_runtime(&mut self) -> io::Result<Runtime> {
-        todo!()
+        // the multi-threaded runtime is a lie. As long as no code looks at the current thread id
+        // and tries to fail if it never sees more than one thread, this can't be detected. (And
+        // even then, there's no guarantee that your tasks will run on multiple threads even if
+        // there are actually multiple threads)
+        Ok(Runtime::new())
     }
 }
 

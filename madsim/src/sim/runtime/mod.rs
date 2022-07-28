@@ -6,11 +6,14 @@ use crate::task::{JoinHandle, NodeId};
 use std::{
     any::TypeId,
     collections::HashMap,
+    fmt,
     future::Future,
     net::IpAddr,
     sync::{Arc, Mutex},
     time::Duration,
 };
+
+use log::warn;
 
 pub(crate) mod context;
 
@@ -347,6 +350,31 @@ impl NodeHandle {
         F::Output: Send + 'static,
     {
         self.task.spawn(future)
+    }
+
+    /// Join the node.
+    /// TODO: unimplemented
+    pub fn join(self) -> Result<(), ()> {
+        warn!("TODO: implement NodeHandle::join()");
+        Ok(())
+    }
+}
+
+impl fmt::Debug for NodeHandle {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "NodeHandle({})", self.id())
+    }
+}
+
+impl Future for NodeHandle {
+    type Output = ();
+
+    fn poll(
+        self: std::pin::Pin<&mut Self>,
+        _cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Self::Output> {
+        // Provide a way for nodes to exit
+        std::task::Poll::Pending
     }
 }
 
