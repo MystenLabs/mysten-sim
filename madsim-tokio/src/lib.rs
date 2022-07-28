@@ -21,7 +21,7 @@ mod sim {
 
     pub mod net;
     mod udp;
-    mod unix;
+    pub mod unix;
 
     // not simulated API
     // TODO: simulate `fs`

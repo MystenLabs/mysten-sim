@@ -1,11 +1,11 @@
 use log::trace;
 
 use std::{
-    io,
     future::Future,
-    net::{SocketAddr, ToSocketAddrs},
+    io,
+    net::SocketAddr,
+    os::unix::io::{AsRawFd, FromRawFd, IntoRawFd, RawFd},
     pin::Pin,
-    os::unix::io::{FromRawFd, IntoRawFd, AsRawFd, RawFd},
     sync::{
         atomic::{AtomicU32, Ordering},
         Arc, Mutex,
@@ -14,11 +14,14 @@ use std::{
     time::Duration,
 };
 
+pub use std::net::ToSocketAddrs;
+
 use madsim::net::{network::Payload, Endpoint};
 
 use real_tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 
 pub use super::udp::*;
+pub use super::unix;
 pub use super::unix::*;
 
 use crate::poller::Poller;
@@ -130,7 +133,6 @@ impl TcpListener {
     pub fn set_ttl(&self, _ttl: u32) -> io::Result<()> {
         unimplemented!("set_ttl not supported in simulator")
     }
-
 }
 
 struct Buffer {
@@ -366,7 +368,12 @@ impl TcpStream {
             .poll_with_fut(cx, || Self::write(self.state.clone(), buf.to_vec()))
     }
 
-    fn poll_read_priv(&self, is_poll: bool, cx: &mut Context<'_>, read: &mut ReadBuf<'_>) -> Poll<io::Result<usize>> {
+    fn poll_read_priv(
+        &self,
+        is_poll: bool,
+        cx: &mut Context<'_>,
+        read: &mut ReadBuf<'_>,
+    ) -> Poll<io::Result<usize>> {
         debug_assert_ne!(read.remaining(), 0);
 
         let mut buffer = self.buffer.lock().unwrap();
@@ -528,7 +535,9 @@ impl AsyncRead for OwnedReadHalf {
         cx: &mut Context<'_>,
         read: &mut ReadBuf<'_>,
     ) -> Poll<io::Result<()>> {
-        self.inner.poll_read_priv(false, cx, read).map(|r| r.map(|_| ()))
+        self.inner
+            .poll_read_priv(false, cx, read)
+            .map(|r| r.map(|_| ()))
     }
 }
 
@@ -675,7 +684,6 @@ impl IntoRawFd for TcpStream {
     }
 }
 
-
 #[cfg(test)]
 mod tests {
 
@@ -709,7 +717,6 @@ mod tests {
                 peek_next_read += 1;
                 peek_next_read %= 0xfe;
             }
-
 
             let read_size = (rand.next_u32() % 0xff).try_into().unwrap();
 

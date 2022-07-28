@@ -5,6 +5,7 @@ use super::{
     time::{TimeHandle, TimeRuntime},
     utils::mpsc,
 };
+use crate::assert_send_sync;
 use async_task::{FallibleTask, Runnable};
 use std::{
     collections::HashMap,
@@ -20,7 +21,8 @@ use std::{
     time::Duration,
 };
 
-pub use tokio::task::yield_now;
+pub use tokio::madsim_adapter::{join_error, runtime_task};
+pub use tokio::task::{yield_now, JoinError};
 
 pub(crate) struct Executor {
     queue: mpsc::Receiver<(Runnable, Arc<TaskInfo>)>,
@@ -47,13 +49,27 @@ impl NodeId {
     }
 }
 
-pub(crate) struct TaskInfo {
+struct TaskInfoInner {
     pub node: NodeId,
     pub name: String,
+}
+
+pub(crate) struct TaskInfo {
+    inner: Mutex<TaskInfoInner>,
     /// A flag indicating that the task should be paused.
     paused: AtomicBool,
     /// A flag indicating that the task should no longer be executed.
     killed: AtomicBool,
+}
+
+impl TaskInfo {
+    pub fn node(&self) -> NodeId {
+        self.inner.try_lock().unwrap().node
+    }
+
+    pub fn name(&self) -> String {
+        self.inner.try_lock().unwrap().name.clone()
+    }
 }
 
 impl Executor {
@@ -88,8 +104,10 @@ impl Executor {
         // push the future into ready queue.
         let sender = self.handle.sender.clone();
         let info = Arc::new(TaskInfo {
-            node: NodeId(0),
-            name: "main".into(),
+            inner: Mutex::new(TaskInfoInner {
+                node: NodeId(0),
+                name: "main".into(),
+            }),
             paused: AtomicBool::new(false),
             killed: AtomicBool::new(false),
         });
@@ -132,7 +150,7 @@ impl Executor {
             } else if info.paused.load(Ordering::SeqCst) {
                 // paused task: push to waiting list
                 let mut nodes = self.nodes.lock().unwrap();
-                nodes.get_mut(&info.node).unwrap().paused.push(runnable);
+                nodes.get_mut(&info.node()).unwrap().paused.push(runnable);
                 continue;
             }
             // run task
@@ -156,12 +174,13 @@ pub(crate) struct TaskHandle {
     nodes: Arc<Mutex<HashMap<NodeId, Node>>>,
     next_node_id: Arc<AtomicU64>,
 }
+assert_send_sync!(TaskHandle);
 
 struct Node {
     info: Arc<TaskInfo>,
     paused: Vec<Runnable>,
     /// A function to spawn the initial task.
-    init: Option<Arc<dyn Fn(&TaskNodeHandle)>>,
+    init: Option<Arc<dyn Fn(&TaskNodeHandle) + Send + Sync>>,
 }
 
 impl TaskHandle {
@@ -171,8 +190,10 @@ impl TaskHandle {
         let node = nodes.get_mut(&id).expect("node not found");
         node.paused.clear();
         let new_info = Arc::new(TaskInfo {
-            node: id,
-            name: node.info.name.clone(),
+            inner: Mutex::new(TaskInfoInner {
+                node: id,
+                name: node.info.name(),
+            }),
             paused: AtomicBool::new(false),
             killed: AtomicBool::new(false),
         });
@@ -216,12 +237,14 @@ impl TaskHandle {
     pub fn create_node(
         &self,
         name: Option<String>,
-        init: Option<Arc<dyn Fn(&TaskNodeHandle)>>,
+        init: Option<Arc<dyn Fn(&TaskNodeHandle) + Send + Sync>>,
     ) -> TaskNodeHandle {
         let id = NodeId(self.next_node_id.fetch_add(1, Ordering::SeqCst));
         let info = Arc::new(TaskInfo {
-            node: id,
-            name: name.unwrap_or_else(|| format!("node-{}", id.0)),
+            inner: Mutex::new(TaskInfoInner {
+                node: id,
+                name: name.unwrap_or_else(|| format!("node-{}", id.0)),
+            }),
             paused: AtomicBool::new(false),
             killed: AtomicBool::new(false),
         });
@@ -258,6 +281,8 @@ pub(crate) struct TaskNodeHandle {
     info: Arc<TaskInfo>,
 }
 
+assert_send_sync!(TaskNodeHandle);
+
 impl TaskNodeHandle {
     pub fn current() -> Self {
         let info = crate::context::current_task();
@@ -266,7 +291,7 @@ impl TaskNodeHandle {
     }
 
     pub(crate) fn id(&self) -> NodeId {
-        self.info.node
+        self.info.node()
     }
 
     pub fn spawn<F>(&self, future: F) -> JoinHandle<F::Output>
@@ -295,7 +320,7 @@ impl TaskNodeHandle {
 
         static NEXT_TASK_ID: AtomicU64 = AtomicU64::new(0);
         JoinHandle {
-            id: NEXT_TASK_ID.fetch_add(1, Ordering::SeqCst),
+            id: runtime_task::next_task_id(),
             task: Mutex::new(Some(task.fallible())),
         }
     }
@@ -334,7 +359,7 @@ where
 /// An owned permission to join on a task (await its termination).
 #[derive(Debug)]
 pub struct JoinHandle<T> {
-    id: u64,
+    id: runtime_task::Id,
     task: Mutex<Option<FallibleTask<T>>>,
 }
 
@@ -361,10 +386,8 @@ impl<T> Future for JoinHandle<T> {
         std::pin::Pin::new(self.task.lock().unwrap().as_mut().unwrap())
             .poll(cx)
             .map(|res| {
-                res.ok_or(JoinError {
-                    id: self.id,
-                    is_panic: true, // TODO: decide cancelled or panic
-                })
+                // TODO: decide cancelled or panic
+                res.ok_or(join_error::cancelled(self.id.clone()))
             })
     }
 }
@@ -374,40 +397,6 @@ impl<T> Drop for JoinHandle<T> {
         if let Some(task) = self.task.lock().unwrap().take() {
             task.detach();
         }
-    }
-}
-
-/// Task failed to execute to completion.
-#[derive(Debug)]
-pub struct JoinError {
-    id: u64,
-    is_panic: bool,
-}
-
-impl JoinError {
-    /// Returns true if the error was caused by the task being cancelled.
-    pub fn is_cancelled(&self) -> bool {
-        !self.is_panic
-    }
-
-    /// Returns true if the error was caused by the task panicking.
-    pub fn is_panic(&self) -> bool {
-        self.is_panic
-    }
-}
-
-impl fmt::Display for JoinError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self.is_panic {
-            false => write!(f, "task {} was cancelled", self.id),
-            true => write!(f, "task {} panicked", self.id),
-        }
-    }
-}
-
-impl std::error::Error for JoinError {
-    fn description(&self) -> &str {
-        "JoinError"
     }
 }
 

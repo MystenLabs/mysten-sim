@@ -28,3 +28,18 @@ pub use _std::*;
 pub mod export {
     pub use futures;
 }
+
+#[macro_export]
+macro_rules! assert_send_sync {
+    ($name:ident) => {
+        const _: () = {
+            fn assert_send<T: Send>() {}
+            fn assert_sync<T: Sync>() {}
+
+            fn assert_all() {
+                assert_send::<$name>();
+                assert_sync::<$name>();
+            }
+        };
+    };
+}

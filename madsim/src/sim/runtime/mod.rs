@@ -1,6 +1,7 @@
 //! The madsim runtime.
 
 use super::*;
+use crate::assert_send_sync;
 use crate::task::{JoinHandle, NodeId};
 use std::{
     any::TypeId,
@@ -29,6 +30,8 @@ pub struct Runtime {
     task: task::Executor,
     handle: Handle,
 }
+
+assert_send_sync!(Runtime);
 
 impl Default for Runtime {
     fn default() -> Self {
@@ -270,7 +273,7 @@ pub struct NodeBuilder<'a> {
     handle: &'a Handle,
     name: Option<String>,
     ip: Option<IpAddr>,
-    init: Option<Arc<dyn Fn(&task::TaskNodeHandle)>>,
+    init: Option<Arc<dyn Fn(&task::TaskNodeHandle) + Send + Sync>>,
 }
 
 impl<'a> NodeBuilder<'a> {
@@ -294,7 +297,7 @@ impl<'a> NodeBuilder<'a> {
     /// Set the initial task for the node.
     ///
     /// This task will be automatically respawned after crash.
-    pub fn init<F>(mut self, future: impl Fn() -> F + 'static) -> Self
+    pub fn init<F>(mut self, future: impl Fn() -> F + Send + Sync + 'static) -> Self
     where
         F: Future + 'static,
     {
@@ -382,7 +385,7 @@ fn init_logger() {
                     style.value("]["),
                     time.elapsed().as_secs_f64(),
                     style.value("]["),
-                    task.name,
+                    task.name(),
                     style.value("]["),
                     record.target(),
                     style.value(']'),

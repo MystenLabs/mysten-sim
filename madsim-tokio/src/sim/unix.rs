@@ -3,13 +3,16 @@
 
 use std::{
     io,
-    net::{Shutdown, SocketAddr},
+    net::Shutdown,
     path::Path,
     pin::Pin,
     task::{Context, Poll},
 };
 
-use real_tokio::io::{Interest, Ready, ReadBuf, AsyncRead, AsyncWrite};
+use real_tokio::io::{AsyncRead, AsyncWrite, Interest, ReadBuf, Ready};
+
+pub use real_tokio::net::unix::UCred;
+pub use std::net::SocketAddr;
 
 /// Provide the tokio::net::UnixListener interface.
 #[derive(Debug)]
@@ -161,10 +164,10 @@ impl UnixStream {
         todo!()
     }
 
-    // todo
-    //pub fn peer_cred(&self) -> io::Result<UCred> {
-    //    todo!()
-    //}
+    /// todo
+    pub fn peer_cred(&self) -> io::Result<UCred> {
+        todo!()
+    }
 
     /// todo
     pub fn take_error(&self) -> io::Result<Option<io::Error>> {
@@ -189,22 +192,13 @@ impl UnixStream {
         todo!()
     }
 
-    fn poll_read_priv(
-        &self,
-        cx: &mut Context<'_>,
-        buf: &mut ReadBuf<'_>,
-    ) -> Poll<io::Result<()>> {
+    fn poll_read_priv(&self, cx: &mut Context<'_>, buf: &mut ReadBuf<'_>) -> Poll<io::Result<()>> {
         todo!()
     }
 
-    fn poll_write_priv(
-        &self,
-        cx: &mut Context<'_>,
-        buf: &[u8],
-    ) -> Poll<io::Result<usize>> {
+    fn poll_write_priv(&self, cx: &mut Context<'_>, buf: &[u8]) -> Poll<io::Result<usize>> {
         todo!()
     }
-
 }
 
 impl AsyncRead for UnixStream {
@@ -235,7 +229,6 @@ impl AsyncWrite for UnixStream {
         Poll::Ready(Ok(()))
     }
 }
-
 
 pub struct ReadHalf<'a>(&'a std::marker::PhantomData<u8>);
 pub struct WriteHalf<'a>(&'a std::marker::PhantomData<u8>);
