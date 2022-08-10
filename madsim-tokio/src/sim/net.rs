@@ -7,7 +7,7 @@ use std::{
     os::unix::io::{AsRawFd, FromRawFd, IntoRawFd, RawFd},
     pin::Pin,
     sync::{
-        atomic::{AtomicU32, Ordering},
+        atomic::{AtomicBool, AtomicU32, Ordering},
         Arc, Mutex,
     },
     task::{Context, Poll},
@@ -237,6 +237,9 @@ struct TcpState {
     local_port: u32,
     remote_port: u32,
     remote_sock: SocketAddr,
+
+    // not simulated, only present to return the correct value with getters/settters.
+    nodelay: AtomicBool,
 }
 
 impl TcpState {
@@ -248,6 +251,7 @@ impl TcpState {
             local_port,
             remote_port,
             remote_sock,
+            nodelay: AtomicBool::new(false),
         }
     }
 
@@ -443,11 +447,12 @@ impl TcpStream {
     }
 
     pub fn nodelay(&self) -> io::Result<bool> {
-        todo!()
+        Ok(self.state.nodelay.load(Ordering::SeqCst))
     }
 
-    pub fn set_nodelay(&self, _nodelay: bool) -> io::Result<()> {
-        todo!()
+    pub fn set_nodelay(&self, nodelay: bool) -> io::Result<()> {
+        self.state.nodelay.store(nodelay, Ordering::SeqCst);
+        Ok(())
     }
 
     pub fn linger(&self) -> io::Result<Option<Duration>> {
