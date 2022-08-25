@@ -114,6 +114,12 @@ impl NetSim {
         network.set_ip(node, ip);
     }
 
+    /// Get IP address of a node.
+    pub fn get_ip(&self, node: NodeId) -> Option<IpAddr> {
+        let network = self.network.lock().unwrap();
+        network.get_ip(node)
+    }
+
     /// Connect a node to the network.
     pub fn connect(&self, id: NodeId) {
         let mut network = self.network.lock().unwrap();

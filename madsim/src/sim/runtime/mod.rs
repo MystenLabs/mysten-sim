@@ -2,6 +2,7 @@
 
 use super::*;
 use crate::assert_send_sync;
+use crate::net::NetSim;
 use crate::task::{JoinHandle, NodeId};
 use std::{
     any::TypeId,
@@ -256,12 +257,6 @@ impl Handle {
         self.task.get_node(id).map(|task| NodeHandle { task })
     }
 
-    /// Get handle to current Node
-    pub fn current_node() -> NodeHandle {
-        let task = task::TaskNodeHandle::current();
-        NodeHandle { task }
-    }
-
     /// Mark this Handle as the currently active one
     pub fn enter(self) -> EnterGuard {
         EnterGuard(context::enter(self))
@@ -338,6 +333,12 @@ pub struct NodeHandle {
 }
 
 impl NodeHandle {
+    /// Get handle to current Node
+    pub fn current() -> Self {
+        let task = task::TaskNodeHandle::current();
+        Self { task }
+    }
+
     /// Returns the node ID.
     pub fn id(&self) -> NodeId {
         self.task.id()
@@ -357,6 +358,12 @@ impl NodeHandle {
     pub fn join(self) -> Result<(), ()> {
         warn!("TODO: implement NodeHandle::join()");
         Ok(())
+    }
+
+    /// Get ip of node
+    pub fn ip(&self) -> Option<IpAddr> {
+        let net = plugin::simulator::<NetSim>();
+        net.get_ip(self.id())
     }
 }
 

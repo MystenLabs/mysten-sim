@@ -46,7 +46,7 @@ impl Handle {
         F: Future + Send + 'static,
         F::Output: Send + 'static,
     {
-        ms_runtime::Handle::current_node().spawn(future)
+        ms_runtime::NodeHandle::current().spawn(future)
     }
 }
 
@@ -82,7 +82,7 @@ impl Runtime {
         F: Future + Send + 'static,
         F::Output: Send + 'static,
     {
-        ms_runtime::Handle::current_node().spawn(future)
+        ms_runtime::NodeHandle::current().spawn(future)
     }
 }
 

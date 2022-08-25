@@ -125,6 +125,11 @@ impl Network {
         // TODO: what if we change the IP when there are opening sockets?
     }
 
+    pub fn get_ip(&self, id: NodeId) -> Option<IpAddr> {
+        let node = self.nodes.get(&id).expect("node not found");
+        node.ip
+    }
+
     pub fn clog_node(&mut self, id: NodeId) {
         assert!(self.nodes.contains_key(&id));
         debug!("clog: {id}");
