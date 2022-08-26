@@ -125,16 +125,40 @@ pub fn test(args: TokenStream, item: TokenStream) -> TokenStream {
     parse_test(input, args).unwrap_or_else(|e| e.to_compile_error().into())
 }
 
-fn parse_test(
-    mut input: syn::ItemFn,
-    _args: syn::AttributeArgs,
-) -> Result<TokenStream, syn::Error> {
+fn parse_test(mut input: syn::ItemFn, args: syn::AttributeArgs) -> Result<TokenStream, syn::Error> {
     if input.sig.asyncness.take().is_none() {
         let msg = "the `async` keyword is missing from the function declaration";
         return Err(syn::Error::new_spanned(input.sig.fn_token, msg));
     }
 
+    let test_config = build_test_config(args)?;
+
     let body = &input.block;
+
+    let body: Box<syn::Block> = if test_config.run_in_client_node {
+        syn::parse2(quote! {
+            {
+                use std::str::FromStr;
+                let ip = std::net::IpAddr::from_str("1.1.1.1").unwrap();
+                let handle = madsim::runtime::Handle::current();
+                let builder = handle.create_node();
+                let node = builder
+                    .ip(ip)
+                    .name("client")
+                    .init(|| async {
+                        ::tracing::info!("client restarted");
+                    })
+                    .build();
+
+                node.spawn(async move #body).await
+                    .expect("join error in test runner")
+            }
+        })
+        .expect("Parsing failure")
+    } else {
+        body.clone()
+    };
+
     let brace_token = input.block.brace_token;
     input.block = syn::parse2(quote! {
         {
@@ -203,5 +227,101 @@ fn parse_test(
         #input
     };
 
+    println!("{:#?}", result);
+
     Ok(result.into())
+}
+
+struct TestConfig {
+    run_in_client_node: bool,
+}
+
+impl Default for TestConfig {
+    fn default() -> Self {
+        Self {
+            run_in_client_node: true,
+        }
+    }
+}
+
+fn build_test_config(args: syn::AttributeArgs) -> Result<TestConfig, syn::Error> {
+    let mut config: TestConfig = Default::default();
+
+    // no need to support tokio::main in simulator
+    let macro_name = "test";
+
+    for arg in args {
+        match arg {
+            syn::NestedMeta::Meta(syn::Meta::NameValue(namevalue)) => {
+                let ident = namevalue
+                    .path
+                    .get_ident()
+                    .ok_or_else(|| {
+                        syn::Error::new_spanned(&namevalue, "Must have specified ident")
+                    })?
+                    .to_string()
+                    .to_lowercase();
+                match ident.as_str() {
+                    "worker_threads" => {
+                        println!("simulator: ignoring `worker_threads` setting");
+                    }
+                    "flavor" => {
+                        println!("simulator: ignoring `flavor` setting");
+                    }
+                    "start_paused" => {
+                        println!("simulator: ignoring `start_paused` setting");
+                    }
+                    "no_client_node" => {
+                        config.run_in_client_node = false;
+                    }
+                    "crate" => {
+                        todo!("tokio::test(crate = \"foo\" not supported");
+                    }
+                    name => {
+                        let msg = format!(
+                            "Unknown attribute {} is specified; expected one of: `flavor`, `worker_threads`, `start_paused`, `crate`",
+                            name,
+                        );
+                        return Err(syn::Error::new_spanned(namevalue, msg));
+                    }
+                }
+            }
+            syn::NestedMeta::Meta(syn::Meta::Path(path)) => {
+                let name = path
+                    .get_ident()
+                    .ok_or_else(|| syn::Error::new_spanned(&path, "Must have specified ident"))?
+                    .to_string()
+                    .to_lowercase();
+                let msg = match name.as_str() {
+                    "threaded_scheduler" | "multi_thread" => {
+                        format!(
+                            "Set the runtime flavor with #[{}(flavor = \"multi_thread\")].",
+                            macro_name
+                        )
+                    }
+                    "basic_scheduler" | "current_thread" | "single_threaded" => {
+                        format!(
+                            "Set the runtime flavor with #[{}(flavor = \"current_thread\")].",
+                            macro_name
+                        )
+                    }
+                    "flavor" | "worker_threads" | "start_paused" => {
+                        format!("The `{}` attribute requires an argument.", name)
+                    }
+                    name => {
+                        format!("Unknown attribute {} is specified; expected one of: `flavor`, `worker_threads`, `start_paused`, `crate`", name)
+                    }
+                };
+                return Err(syn::Error::new_spanned(path, msg));
+            }
+            other => {
+                return Err(syn::Error::new_spanned(
+                    other,
+                    "Unknown attribute inside the macro",
+                ));
+            }
+        }
+    }
+
+    Ok(config)
 }
