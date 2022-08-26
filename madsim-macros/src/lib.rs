@@ -138,6 +138,7 @@ fn parse_test(
     let brace_token = input.block.brace_token;
     input.block = syn::parse2(quote! {
         {
+            ::madsim::runtime::init_logger();
             let seed: u64 = if let Ok(seed_str) = ::std::env::var("MADSIM_TEST_SEED") {
                 seed_str.parse().expect("MADSIM_TEST_SEED should be an integer")
             } else {
