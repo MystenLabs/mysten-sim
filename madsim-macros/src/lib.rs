@@ -168,7 +168,7 @@ fn parse_test(
                 let seed = if check { seed } else { seed + i };
                 let rand_log0 = rand_log.take();
                 let config_ = config.clone();
-                let res = std::panic::catch_unwind(move || {
+                let res = std::thread::spawn(move || {
                     let mut rt = ::madsim::runtime::Runtime::with_seed_and_config(seed, config_);
                     if check {
                         rt.enable_determinism_check(rand_log0);
@@ -179,7 +179,7 @@ fn parse_test(
                     let ret = rt.block_on(async #body);
                     let log = rt.take_rand_log();
                     (ret, log)
-                });
+                }).join();
                 match res {
                     Ok((ret, log)) => {
                         return_value = Some(ret);
