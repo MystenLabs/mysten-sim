@@ -7,6 +7,7 @@ use super::{
 };
 use crate::assert_send_sync;
 use async_task::{FallibleTask, Runnable};
+use rand::Rng;
 use std::{
     collections::HashMap,
     fmt,
@@ -82,8 +83,8 @@ impl Executor {
                 sender,
                 next_node_id: Arc::new(AtomicU64::new(1)),
             },
+            time: TimeRuntime::new(&rand),
             rand,
-            time: TimeRuntime::new(),
             time_limit: None,
         }
     }
@@ -129,7 +130,7 @@ impl Executor {
             if let Poll::Ready(val) = Pin::new(&mut task).poll(&mut cx) {
                 return val;
             }
-            let going = self.time.advance();
+            let going = self.time.advance_to_next_event();
             assert!(going, "no events, the task will block forever");
             if let Some(limit) = self.time_limit {
                 assert!(
@@ -156,6 +157,10 @@ impl Executor {
             // run task
             let _guard = crate::context::enter_task(info);
             runnable.run();
+
+            // advance time: 50-100ns
+            let dur = Duration::from_nanos(self.rand.with(|rng| rng.gen_range(50..100)));
+            self.time.advance(dur);
         }
     }
 }

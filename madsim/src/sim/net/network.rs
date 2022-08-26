@@ -245,9 +245,10 @@ impl Network {
         };
         let latency = self.rand.gen_range(self.config.send_latency.clone());
         trace!("delay: {latency:?}");
-        self.time.add_timer(self.time.now() + latency, move || {
-            ep.lock().unwrap().deliver(msg);
-        });
+        self.time
+            .add_timer(self.time.now_instant() + latency, move || {
+                ep.lock().unwrap().deliver(msg);
+            });
         self.stat.msg_count += 1;
     }
 
