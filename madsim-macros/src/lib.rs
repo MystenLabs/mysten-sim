@@ -150,8 +150,12 @@ fn parse_test(mut input: syn::ItemFn, args: syn::AttributeArgs) -> Result<TokenS
                     })
                     .build();
 
-                node.spawn(async move #body).await
-                    .expect("join error in test runner")
+                let res = node.spawn(async move #body).await
+                    .expect("join error in test runner");
+
+                handle.kill(node.id());
+
+                res
             }
         })
         .expect("Parsing failure")
