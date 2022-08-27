@@ -163,6 +163,8 @@ fn parse_test(mut input: syn::ItemFn, args: syn::AttributeArgs) -> Result<TokenS
         body.clone()
     };
 
+    let check_determinism = test_config.check_determinism;
+
     let brace_token = input.block.brace_token;
     input.block = syn::parse2(quote! {
         {
@@ -186,10 +188,11 @@ fn parse_test(mut input: syn::ItemFn, args: syn::AttributeArgs) -> Result<TokenS
             let time_limit_s = std::env::var("MADSIM_TEST_TIME_LIMIT").ok().map(|num_str| {
                 num_str.parse::<f64>().expect("MADSIM_TEST_TIME_LIMIT should be an number")
             });
-            let check = ::std::env::var("MADSIM_TEST_CHECK_DETERMINISM").is_ok();
+            let check = ::std::env::var("MADSIM_TEST_CHECK_DETERMINISM").is_ok() || #check_determinism;
             if check {
                 count = count.max(2);
             }
+
             let mut rand_log = None;
             let mut return_value = None;
             for i in 0..count {
@@ -238,12 +241,14 @@ fn parse_test(mut input: syn::ItemFn, args: syn::AttributeArgs) -> Result<TokenS
 
 struct TestConfig {
     run_in_client_node: bool,
+    check_determinism: bool,
 }
 
 impl Default for TestConfig {
     fn default() -> Self {
         Self {
             run_in_client_node: true,
+            check_determinism: false,
         }
     }
 }
@@ -297,6 +302,10 @@ fn build_test_config(args: syn::AttributeArgs) -> Result<TestConfig, syn::Error>
                     .to_string()
                     .to_lowercase();
                 let msg = match name.as_str() {
+                    "check_determinism" => {
+                        config.check_determinism = true;
+                        continue;
+                    }
                     "threaded_scheduler" | "multi_thread" => {
                         format!(
                             "Set the runtime flavor with #[{}(flavor = \"multi_thread\")].",
