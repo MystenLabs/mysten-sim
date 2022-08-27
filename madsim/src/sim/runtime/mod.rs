@@ -4,6 +4,7 @@ use super::*;
 use crate::assert_send_sync;
 use crate::net::NetSim;
 use crate::task::{JoinHandle, NodeId};
+use ::rand::Rng;
 use std::{
     any::TypeId,
     collections::HashMap,
@@ -51,7 +52,8 @@ impl Runtime {
 
     /// Create a new runtime instance with given seed and config.
     pub fn with_seed_and_config(seed: u64, config: Config) -> Self {
-        let rand = rand::GlobalRng::new_with_seed(seed);
+        let mut rand = rand::GlobalRng::new_with_seed(seed);
+        tokio::madsim_adapter::util::reset_rng(rand.gen::<u64>());
         let task = task::Executor::new(rand.clone());
         let handle = Handle {
             rand: rand.clone(),
