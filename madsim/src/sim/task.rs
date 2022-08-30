@@ -22,6 +22,8 @@ use std::{
     time::Duration,
 };
 
+use tracing::{trace_span, Span};
+
 pub use tokio::madsim_adapter::{join_error, runtime_task};
 pub use tokio::task::{yield_now, JoinError};
 
@@ -50,13 +52,14 @@ impl NodeId {
     }
 }
 
-struct TaskInfoInner {
+pub(crate) struct NodeInfo {
     pub node: NodeId,
     pub name: String,
+    span: Span,
 }
 
 pub(crate) struct TaskInfo {
-    inner: Mutex<TaskInfoInner>,
+    inner: Arc<NodeInfo>,
     /// A flag indicating that the task should be paused.
     paused: AtomicBool,
     /// A flag indicating that the task should no longer be executed.
@@ -65,11 +68,15 @@ pub(crate) struct TaskInfo {
 
 impl TaskInfo {
     pub fn node(&self) -> NodeId {
-        self.inner.try_lock().unwrap().node
+        self.inner.node
     }
 
     pub fn name(&self) -> String {
-        self.inner.try_lock().unwrap().name.clone()
+        self.inner.name.clone()
+    }
+
+    pub fn span(&self) -> Span {
+        self.inner.span.clone()
     }
 }
 
@@ -105,9 +112,10 @@ impl Executor {
         // push the future into ready queue.
         let sender = self.handle.sender.clone();
         let info = Arc::new(TaskInfo {
-            inner: Mutex::new(TaskInfoInner {
+            inner: Arc::new(NodeInfo {
                 node: NodeId(0),
                 name: "main".into(),
+                span: trace_span!(parent: None, "node", id = 0, "main"),
             }),
             paused: AtomicBool::new(false),
             killed: AtomicBool::new(false),
@@ -195,9 +203,10 @@ impl TaskHandle {
         let node = nodes.get_mut(&id).expect("node not found");
         node.paused.clear();
         let new_info = Arc::new(TaskInfo {
-            inner: Mutex::new(TaskInfoInner {
+            inner: Arc::new(NodeInfo {
                 node: id,
                 name: node.info.name(),
+                span: trace_span!(parent: None, "node", %id, name = &node.info.name()),
             }),
             paused: AtomicBool::new(false),
             killed: AtomicBool::new(false),
@@ -245,10 +254,12 @@ impl TaskHandle {
         init: Option<Arc<dyn Fn(&TaskNodeHandle) + Send + Sync>>,
     ) -> TaskNodeHandle {
         let id = NodeId(self.next_node_id.fetch_add(1, Ordering::SeqCst));
+        let name = name.unwrap_or_else(|| format!("node-{}", id.0));
         let info = Arc::new(TaskInfo {
-            inner: Mutex::new(TaskInfoInner {
+            inner: Arc::new(NodeInfo {
                 node: id,
-                name: name.unwrap_or_else(|| format!("node-{}", id.0)),
+                name: name.clone(),
+                span: trace_span!(parent: None, "node", %id, name),
             }),
             paused: AtomicBool::new(false),
             killed: AtomicBool::new(false),
