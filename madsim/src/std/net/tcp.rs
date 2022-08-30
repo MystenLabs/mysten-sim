@@ -3,7 +3,7 @@
 use crate::task;
 use bytes::{Buf, Bytes};
 use futures::StreamExt;
-use log::*;
+use tracing::*;
 use std::{
     collections::HashMap,
     io::{self, IoSlice},

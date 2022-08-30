@@ -1,4 +1,4 @@
-use log::trace;
+use tracing::trace;
 
 use std::{
     future::Future,
@@ -695,7 +695,7 @@ mod tests {
     use super::{OwnedReadHalf, OwnedWriteHalf, TcpListener, TcpStream};
     use bytes::{BufMut, BytesMut};
     use futures::join;
-    use log::trace;
+    use tracing::trace;
     use madsim::{rand, rand::RngCore, runtime::Runtime};
     use real_tokio::{
         io::{AsyncReadExt, AsyncWriteExt},

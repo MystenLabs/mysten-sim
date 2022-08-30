@@ -209,7 +209,6 @@ fn parse_test(mut input: syn::ItemFn, args: syn::AttributeArgs) -> Result<TokenS
     let brace_token = input.block.brace_token;
     input.block = syn::parse2(quote_spanned! {last_stmt_end_span=>
         {
-            ::#crate_ident::runtime::init_logger();
             let seed: u64 = if let Ok(seed_str) = ::std::env::var("MADSIM_TEST_SEED") {
                 seed_str.parse().expect("MADSIM_TEST_SEED should be an integer")
             } else {

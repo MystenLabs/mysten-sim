@@ -35,7 +35,7 @@
 //! runtime.block_on(f);
 //! ```
 
-use log::*;
+use tracing::*;
 use std::{
     collections::{hash_map::Entry, HashMap},
     io,

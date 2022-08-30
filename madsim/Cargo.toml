@@ -24,7 +24,8 @@ bytes = "1"
 env_logger = "0.9"
 futures = "0.3"
 lazy_static = "1.4"
-log = "0.4"
+tracing = "0.1"
+tracing-subscriber = "0.3"
 madsim-macros = { version = "=0.2.0-alpha.3", path = "../madsim-macros", optional = true }
 rand = { version = "0.8", features = ["small_rng"] }
 serde = { version = "1", features = ["derive"] }

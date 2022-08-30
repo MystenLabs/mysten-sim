@@ -69,7 +69,7 @@ impl<L> Server<L> {
 
     /// Set the Tower Layer all services will be wrapped in.
     pub fn layer<NewLayer>(self, new_layer: NewLayer) -> Server<Stack<NewLayer, L>> {
-        log::warn!("layer is unimplemented and ignored");
+        tracing::warn!("layer is unimplemented and ignored");
         Server {
             builder: self.builder.layer(new_layer),
         }
@@ -138,7 +138,7 @@ impl<L> Router<L> {
             let (mut tag, path, msg, client_stream, server_stream) = *msg
                 .downcast::<(u64, PathAndQuery, BoxMessage, bool, bool)>()
                 .expect("invalid type");
-            log::trace!("request: {path} <- {from}");
+            tracing::trace!("request: {path} <- {from}");
 
             let requests: BoxMessageStream = if !client_stream {
                 // single request

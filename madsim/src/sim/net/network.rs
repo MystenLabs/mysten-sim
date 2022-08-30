@@ -1,6 +1,6 @@
 use crate::{rand::*, task::NodeId, time::TimeHandle};
 use futures::channel::oneshot;
-use log::*;
+use tracing::*;
 use serde::{Deserialize, Serialize};
 use std::{
     any::Any,

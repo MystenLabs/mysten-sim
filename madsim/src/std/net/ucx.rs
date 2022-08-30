@@ -2,7 +2,7 @@
 
 use async_ucx::ucp;
 use bytes::Bytes;
-use log::*;
+use tracing::*;
 use std::{
     cell::RefCell,
     collections::HashMap,

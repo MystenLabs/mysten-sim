@@ -61,7 +61,7 @@ tokio-macros = ["real_tokio/tokio-macros"]
 madsim = { version = "=0.2.0-alpha.3", path = "../madsim" }
 
 [dependencies]
-log = "0.4"
+tracing = "0.1"
 real_tokio = { path = "../tokio/tokio", package = "real_tokio" }
 bytes = { version = "1.1" }
 futures = { version = "0.3.0", features = ["async-await"] }

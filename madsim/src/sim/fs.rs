@@ -1,6 +1,6 @@
 //! Asynchronous file system.
 
-use log::*;
+use tracing::*;
 use std::{
     collections::HashMap,
     io::{Error, ErrorKind, Result},

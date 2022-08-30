@@ -15,7 +15,7 @@ use std::{
     time::Duration,
 };
 
-use log::warn;
+use tracing::warn;
 
 pub(crate) mod context;
 
@@ -386,58 +386,7 @@ impl Future for NodeHandle {
 
 /// Initialize logger.
 pub fn init_logger() {
-    use env_logger::fmt::Color;
-    use std::io::Write;
     use std::sync::Once;
     static LOGGER_INIT: Once = Once::new();
-    LOGGER_INIT.call_once(|| {
-        let start = std::env::var("MADSIM_LOG_TIME_START")
-            .ok()
-            .map(|s| Duration::from_secs_f64(s.parse::<f64>().unwrap()));
-        let mut builder = env_logger::Builder::from_default_env();
-        builder.format(move |buf, record| {
-            let mut style = buf.style();
-            style.set_color(Color::Black).set_intense(true);
-            let mut level_style = buf.style();
-            level_style.set_color(match record.level() {
-                log::Level::Error => Color::Red,
-                log::Level::Warn => Color::Yellow,
-                log::Level::Info => Color::Green,
-                log::Level::Debug => Color::Blue,
-                log::Level::Trace => Color::Cyan,
-            });
-            if let Some(time) = crate::time::TimeHandle::try_current() {
-                if matches!(start, Some(t0) if time.elapsed() < t0) {
-                    return write!(buf, "");
-                }
-                let task = crate::context::current_task();
-                writeln!(
-                    buf,
-                    "{}{:>5}{}{:.6}s{}{}{}{:>10}{} {}",
-                    style.value('['),
-                    level_style.value(record.level()),
-                    style.value("]["),
-                    time.elapsed().as_secs_f64(),
-                    style.value("]["),
-                    task.name(),
-                    style.value("]["),
-                    record.target(),
-                    style.value(']'),
-                    record.args()
-                )
-            } else {
-                writeln!(
-                    buf,
-                    "{}{:>5}{}{:>10}{} {}",
-                    style.value('['),
-                    level_style.value(record.level()),
-                    style.value("]["),
-                    record.target(),
-                    style.value(']'),
-                    record.args()
-                )
-            }
-        });
-        builder.init();
-    });
+    LOGGER_INIT.call_once(tracing_subscriber::fmt::init);
 }

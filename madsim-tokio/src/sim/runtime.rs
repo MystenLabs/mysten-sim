@@ -6,7 +6,7 @@ use std::time::Duration;
 use madsim::runtime as ms_runtime;
 use madsim::task::JoinHandle;
 
-use log::debug;
+use tracing::debug;
 
 #[derive(Clone)]
 pub struct Handle {
