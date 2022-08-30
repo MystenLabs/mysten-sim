@@ -4,7 +4,8 @@ mod request;
 mod service;
 
 use proc_macro::TokenStream;
-use quote::quote;
+use proc_macro2::{Ident, Span};
+use quote::{quote, quote_spanned, ToTokens};
 use syn::DeriveInput;
 
 #[proc_macro_derive(Request, attributes(rtype))]
@@ -156,12 +157,31 @@ fn parse_test(mut input: syn::ItemFn, args: syn::AttributeArgs) -> Result<TokenS
 
     let body = &input.block;
 
+    let (last_stmt_start_span, last_stmt_end_span) = {
+        let mut last_stmt = input
+            .block
+            .stmts
+            .last()
+            .map(ToTokens::into_token_stream)
+            .unwrap_or_default()
+            .into_iter();
+        // `Span` on stable Rust has a limitation that only points to the first
+        // token, not the whole tokens. We can work around this limitation by
+        // using the first/last span of the tokens like
+        // `syn::Error::new_spanned` does.
+        let start = last_stmt.next().map_or_else(Span::call_site, |t| t.span());
+        let end = last_stmt.last().map_or(start, |t| t.span());
+        (start, end)
+    };
+    let crate_name = test_config.crate_name.as_deref().unwrap_or("madsim");
+    let crate_ident = Ident::new(crate_name, last_stmt_start_span);
+
     let body: Box<syn::Block> = if test_config.run_in_client_node {
-        syn::parse2(quote! {
+        syn::parse2(quote_spanned! {last_stmt_start_span=>
             {
                 use std::str::FromStr;
                 let ip = std::net::IpAddr::from_str("1.1.1.1").unwrap();
-                let handle = madsim::runtime::Handle::current();
+                let handle = #crate_ident::runtime::Handle::current();
                 let builder = handle.create_node();
                 let node = builder
                     .ip(ip)
@@ -187,9 +207,9 @@ fn parse_test(mut input: syn::ItemFn, args: syn::AttributeArgs) -> Result<TokenS
     let check_determinism = test_config.check_determinism;
 
     let brace_token = input.block.brace_token;
-    input.block = syn::parse2(quote! {
+    input.block = syn::parse2(quote_spanned! {last_stmt_end_span=>
         {
-            ::madsim::runtime::init_logger();
+            ::#crate_ident::runtime::init_logger();
             let seed: u64 = if let Ok(seed_str) = ::std::env::var("MADSIM_TEST_SEED") {
                 seed_str.parse().expect("MADSIM_TEST_SEED should be an integer")
             } else {
@@ -197,9 +217,9 @@ fn parse_test(mut input: syn::ItemFn, args: syn::AttributeArgs) -> Result<TokenS
             };
             let config = if let Ok(config_path) = std::env::var("MADSIM_TEST_CONFIG") {
                 let content = std::fs::read_to_string(config_path).expect("failed to read config file");
-                content.parse::<::madsim::Config>().expect("failed to parse config file")
+                content.parse::<::#crate_ident::Config>().expect("failed to parse config file")
             } else {
-                ::madsim::Config::default()
+                ::#crate_ident::Config::default()
             };
             let mut count: u64 = if let Ok(num_str) = std::env::var("MADSIM_TEST_NUM") {
                 num_str.parse().expect("MADSIM_TEST_NUM should be an integer")
@@ -221,7 +241,7 @@ fn parse_test(mut input: syn::ItemFn, args: syn::AttributeArgs) -> Result<TokenS
                 let rand_log0 = rand_log.take();
                 let config_ = config.clone();
                 let res = std::thread::spawn(move || {
-                    let mut rt = ::madsim::runtime::Runtime::with_seed_and_config(seed, config_);
+                    let mut rt = ::#crate_ident::runtime::Runtime::with_seed_and_config(seed, config_);
                     if check {
                         rt.enable_determinism_check(rand_log0);
                     }
@@ -259,13 +279,26 @@ fn parse_test(mut input: syn::ItemFn, args: syn::AttributeArgs) -> Result<TokenS
 }
 
 struct TestConfig {
+    crate_name: Option<String>,
     run_in_client_node: bool,
     check_determinism: bool,
+}
+
+impl TestConfig {
+    fn set_crate_name(&mut self, name: syn::Lit, span: Span) -> Result<(), syn::Error> {
+        if self.crate_name.is_some() {
+            return Err(syn::Error::new(span, "`crate` set multiple times."));
+        }
+        let name_ident = parse_ident(name, span, "crate")?;
+        self.crate_name = Some(name_ident.to_string());
+        Ok(())
+    }
 }
 
 impl Default for TestConfig {
     fn default() -> Self {
         Self {
+            crate_name: None,
             run_in_client_node: true,
             check_determinism: false,
         }
@@ -303,7 +336,10 @@ fn build_test_config(args: syn::AttributeArgs) -> Result<TestConfig, syn::Error>
                         config.run_in_client_node = false;
                     }
                     "crate" => {
-                        todo!("tokio::test(crate = \"foo\" not supported");
+                        config.set_crate_name(
+                            namevalue.lit.clone(),
+                            syn::spanned::Spanned::span(&namevalue.lit),
+                        )?;
                     }
                     name => {
                         let msg = format!(
@@ -357,3 +393,25 @@ fn build_test_config(args: syn::AttributeArgs) -> Result<TestConfig, syn::Error>
 
     Ok(config)
 }
+
+fn parse_ident(lit: syn::Lit, span: Span, field: &str) -> Result<Ident, syn::Error> {
+    match lit {
+        syn::Lit::Str(s) => {
+            let err = syn::Error::new(
+                span,
+                format!(
+                    "Failed to parse value of `{}` as ident: \"{}\"",
+                    field,
+                    s.value()
+                ),
+            );
+            let path = s.parse::<syn::Path>().map_err(|_| err.clone())?;
+            path.get_ident().cloned().ok_or(err)
+        }
+        _ => Err(syn::Error::new(
+            span,
+            format!("Failed to parse value of `{}` as ident.", field),
+        )),
+    }
+}
+
