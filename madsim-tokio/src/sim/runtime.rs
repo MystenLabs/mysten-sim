@@ -60,12 +60,12 @@ pub struct Runtime {
 }
 
 impl Runtime {
-    fn new() -> Self {
-        Self {
+    pub fn new() -> io::Result<Self> {
+        Ok(Self {
             handle: Handle {
                 inner: ms_runtime::Handle::current(),
             },
-        }
+        })
     }
 
     pub fn block_on<F: Future>(&self, _future: F) -> F::Output {
@@ -264,7 +264,7 @@ impl Builder {
     }
 
     fn build_basic_runtime(&mut self) -> io::Result<Runtime> {
-        Ok(Runtime::new())
+        Runtime::new()
     }
 
     pub fn enable_io(&mut self) -> &mut Self {
@@ -287,7 +287,7 @@ impl Builder {
         // and tries to fail if it never sees more than one thread, this can't be detected. (And
         // even then, there's no guarantee that your tasks will run on multiple threads even if
         // there are actually multiple threads)
-        Ok(Runtime::new())
+        Runtime::new()
     }
 }
 

@@ -77,6 +77,27 @@ fn parse_main(
     Ok(result.into())
 }
 
+/// This macro will be exposed as #[tokio::test], so we want to mark it as ignored when running in
+/// the simulator
+#[proc_macro_attribute]
+pub fn test(_args: TokenStream, item: TokenStream) -> TokenStream {
+    let input = syn::parse_macro_input!(item as syn::ItemFn);
+
+    let fn_name = input.sig.ident.clone();
+    let result = quote! {
+        #[::core::prelude::v1::test]
+        #[ignore = "tokio-only test"]
+        fn #fn_name () {
+            unimplemented!("this test can only be run in tokio");
+
+            // paste original function to silence un-used import errors.
+            #[allow(dead_code)]
+            #input
+        }
+    };
+    result.into()
+}
+
 /// Marks async function to be executed by runtime, suitable to test environment.
 ///
 /// # Example
@@ -118,7 +139,7 @@ fn parse_main(
 ///
 ///     By default, it is disabled.
 #[proc_macro_attribute]
-pub fn test(args: TokenStream, item: TokenStream) -> TokenStream {
+pub fn sim_test(args: TokenStream, item: TokenStream) -> TokenStream {
     let input = syn::parse_macro_input!(item as syn::ItemFn);
     let args = syn::parse_macro_input!(args as syn::AttributeArgs);
 
@@ -234,8 +255,6 @@ fn parse_test(mut input: syn::ItemFn, args: syn::AttributeArgs) -> Result<TokenS
         #input
     };
 
-    println!("{:#?}", result);
-
     Ok(result.into())
 }
 
@@ -322,7 +341,7 @@ fn build_test_config(args: syn::AttributeArgs) -> Result<TestConfig, syn::Error>
                         format!("The `{}` attribute requires an argument.", name)
                     }
                     name => {
-                        format!("Unknown attribute {} is specified; expected one of: `flavor`, `worker_threads`, `start_paused`, `crate`", name)
+                        format!("Unknown attribute {} is specified; expected one of: `flavor`, `worker_threads`, `start_paused`, `crate`, `check_determinism`", name)
                     }
                 };
                 return Err(syn::Error::new_spanned(path, msg));

@@ -17,7 +17,7 @@ mod sim {
     #[cfg(feature = "time")]
     pub use madsim::time;
     #[cfg(all(feature = "rt", feature = "macros"))]
-    pub use madsim::{main, test};
+    pub use madsim::{sim_test, test};
 
     pub mod net;
     mod udp;
@@ -35,7 +35,7 @@ mod sim {
     pub use real_tokio::sync;
     pub use real_tokio::{io, pin};
     #[cfg(feature = "macros")]
-    pub use real_tokio::{join, select, try_join};
+    pub use real_tokio::{join, main, select, try_join};
 }
 
 #[cfg(madsim)]

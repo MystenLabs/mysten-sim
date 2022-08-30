@@ -1,10 +1,9 @@
-
 pub struct Handle {}
 
 pub struct Runtime {}
 
 pub struct EnterGuard<'a> {
-    _lt: std::marker::PhantomData<&'a Handle>
+    _lt: std::marker::PhantomData<&'a Handle>,
 }
 
 impl Drop for EnterGuard {
