@@ -217,6 +217,11 @@ impl Handle {
         context::current(|h| h.clone())
     }
 
+    /// Returns a handle if there is any active
+    pub fn try_current() -> Option<Self> {
+        context::try_current(|h| h.clone())
+    }
+
     /// Kill a node.
     ///
     /// - All tasks spawned on this node will be killed immediately.
