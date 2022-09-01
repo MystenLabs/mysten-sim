@@ -14,7 +14,6 @@ categories = ["asynchronous", "simulation"]
 
 [features]
 default = ["macros", "rpc"]
-ucx = ["async-ucx"]
 rpc = ["bincode"]
 macros = ["msim-macros", "tokio/macros"]
 
@@ -36,14 +35,9 @@ async-task = "4"
 downcast-rs = "1.2"
 libc = "0.2"
 naive-timer = "0.2"
-tokio = { path = "../tokio/tokio", package = "real_tokio" }
+tokio = { path = "../tokio/tokio", package = "real_tokio", features = ["full"] }
+tokio-util = { path = "../tokio/tokio-util", features = ["full"] }
 toml = "0.5"
-
-[target.'cfg(not(msim))'.dependencies]
-async-ucx = { version = "0.1", features = ["event"], optional = true }
-#tokio = { version = "1", features = ["rt", "fs", "net", "time", "io-util", "sync"] }
-tokio = { path = "../tokio/tokio", package = "real_tokio", features = ["rt", "fs", "net", "time", "io-util", "sync"] }
-tokio-util = { path = "../tokio/tokio-util", version = "0.7", features = ["codec"] }
 
 [dev-dependencies]
 criterion = "0.3"
