@@ -17,7 +17,7 @@ use crate::{
 };
 
 /// File system simulator.
-#[cfg_attr(docsrs, doc(cfg(madsim)))]
+#[cfg_attr(docsrs, doc(cfg(msim)))]
 #[derive(Default)]
 pub struct FsSim {
     handles: Mutex<HashMap<NodeId, FsNodeHandle>>,

@@ -1,4 +1,4 @@
-use madsim::{net::Endpoint, Request};
+use msim::{net::Endpoint, Request};
 use serde::{Deserialize, Serialize};
 
 #[derive(Serialize, Deserialize, Request)]
@@ -8,7 +8,7 @@ struct Echo(String);
 #[derive(Clone)]
 struct Server;
 
-#[madsim::service]
+#[msim::service]
 impl Server {
     #[rpc]
     fn echo(&self, req: Echo) -> String {

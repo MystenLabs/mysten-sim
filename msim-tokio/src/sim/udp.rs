@@ -5,7 +5,7 @@ use std::{
     task::{Context, Poll},
 };
 
-use madsim::net::Endpoint;
+use msim::net::Endpoint;
 use real_tokio::io::{Interest, ReadBuf, Ready};
 
 use bytes::BufMut;

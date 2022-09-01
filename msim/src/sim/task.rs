@@ -24,7 +24,7 @@ use std::{
 
 use tracing::{trace_span, Span};
 
-pub use tokio::madsim_adapter::{join_error, runtime_task};
+pub use tokio::msim_adapter::{join_error, runtime_task};
 pub use tokio::task::{yield_now, JoinError};
 
 pub(crate) struct Executor {
@@ -36,7 +36,7 @@ pub(crate) struct Executor {
 }
 
 /// A unique identifier for a node.
-#[cfg_attr(docsrs, doc(cfg(madsim)))]
+#[cfg_attr(docsrs, doc(cfg(msim)))]
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Clone, Copy)]
 pub struct NodeId(u64);
 

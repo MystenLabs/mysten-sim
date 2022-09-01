@@ -162,7 +162,7 @@ impl Endpoint {
     ///
     /// # Example
     /// ```ignore
-    /// use madsim_std::{Runtime, net::Endpoint};
+    /// use msim_std::{Runtime, net::Endpoint};
     ///
     /// Runtime::new().block_on(async {
     ///     let net = Endpoint::current();
@@ -203,7 +203,7 @@ impl Endpoint {
     ///
     /// # Example
     /// ```ignore
-    /// use madsim_std::{Runtime, net::Endpoint};
+    /// use msim_std::{Runtime, net::Endpoint};
     ///
     /// Runtime::new().block_on(async {
     ///     let net = Endpoint::current();

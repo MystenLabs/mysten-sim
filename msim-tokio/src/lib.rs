@@ -1,23 +1,23 @@
-#[cfg(not(madsim))]
+#[cfg(not(msim))]
 pub use real_tokio::*;
 
-#[cfg(madsim)]
+#[cfg(msim)]
 pub use self::sim::*;
 
-#[cfg(madsim)]
+#[cfg(msim)]
 mod sim {
     // no mod `runtime`
     pub mod runtime;
     // TODO: simulate `task_local`
 
     // simulated API
-    pub use madsim::task;
+    pub use msim::task;
     #[cfg(feature = "rt")]
-    pub use madsim::task::spawn;
+    pub use msim::task::spawn;
     #[cfg(feature = "time")]
-    pub use madsim::time;
+    pub use msim::time;
     #[cfg(all(feature = "rt", feature = "macros"))]
-    pub use madsim::{sim_test, test};
+    pub use msim::{sim_test, test};
 
     pub mod net;
     mod udp;
@@ -38,5 +38,5 @@ mod sim {
     pub use real_tokio::{join, main, select, try_join};
 }
 
-#[cfg(madsim)]
+#[cfg(msim)]
 mod poller;

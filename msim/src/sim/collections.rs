@@ -18,7 +18,7 @@ pub use std::collections::{
 
 /// A deterministic random state.
 ///
-/// It can only be used within the madsim context.
+/// It can only be used within the msim context.
 #[derive(Clone, Debug)]
 pub struct RandomState(ahash::RandomState);
 

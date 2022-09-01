@@ -166,8 +166,8 @@ impl Endpoint {
     ///
     /// # Example
     /// ```ignore
-    /// # use madsim_std as madsim;
-    /// use madsim::{Runtime, net::Endpoint};
+    /// # use msim_std as msim;
+    /// use msim::{Runtime, net::Endpoint};
     ///
     /// Runtime::new().block_on(async {
     ///     let net = Endpoint::bind("127.0.0.1:0").await.unwrap();
@@ -204,8 +204,8 @@ impl Endpoint {
     ///
     /// # Example
     /// ```ignore
-    /// # use madsim_std as madsim;
-    /// use madsim::{Runtime, net::Endpoint};
+    /// # use msim_std as msim;
+    /// use msim::{Runtime, net::Endpoint};
     ///
     /// Runtime::new().block_on(async {
     ///     let net = Endpoint::bind("127.0.0.1:0").await.unwrap();

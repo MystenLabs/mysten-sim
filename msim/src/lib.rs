@@ -4,23 +4,23 @@
 //!
 //! - `rpc`: Enables RPC through network.
 //! - `logger`: Enables built-in logger.
-//! - `macros`: Enables `#[madsim::main]` and `#[madsim::test]` macros.
+//! - `macros`: Enables `#[msim::main]` and `#[msim::test]` macros.
 
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
 #[cfg(all(feature = "rpc", feature = "macros"))]
 #[cfg_attr(docsrs, doc(cfg(all(feature = "rpc", feature = "macros"))))]
-pub use madsim_macros::{service, Request};
+pub use msim_macros::{service, Request};
 
-#[cfg(madsim)]
+#[cfg(msim)]
 mod sim;
-#[cfg(madsim)]
+#[cfg(msim)]
 pub use sim::*;
 
-#[cfg(not(madsim))]
+#[cfg(not(msim))]
 #[path = "std/mod.rs"]
 mod _std;
-#[cfg(not(madsim))]
+#[cfg(not(msim))]
 pub use _std::*;
 
 // Includes re-exports used by macros.

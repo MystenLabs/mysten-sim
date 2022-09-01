@@ -3,13 +3,13 @@
 //! This module re-exports the [`rand`] crate, except for the random number generators.
 //!
 //! User should call [`thread_rng()`] to retrieve the deterministic random number
-//! generator from the current madsim context. **Do not** use [`rand`] crate directly,
+//! generator from the current msim context. **Do not** use [`rand`] crate directly,
 //! because no determinism is guaranteed.
 //!
 //! # Example
 //!
 //! ```
-//! use madsim::{runtime::Runtime, rand::{thread_rng, Rng}};
+//! use msim::{runtime::Runtime, rand::{thread_rng, Rng}};
 //!
 //! Runtime::new().block_on(async {
 //!     let mut rng = thread_rng();
@@ -44,7 +44,7 @@ pub mod prelude {
 }
 
 /// Global deterministic random number generator.
-#[cfg_attr(docsrs, doc(cfg(madsim)))]
+#[cfg_attr(docsrs, doc(cfg(msim)))]
 #[derive(Clone)]
 pub struct GlobalRng {
     inner: Arc<Mutex<Inner>>,
@@ -123,7 +123,7 @@ impl GlobalRng {
     }
 }
 
-/// Retrieve the deterministic random number generator from the current madsim context.
+/// Retrieve the deterministic random number generator from the current msim context.
 pub fn thread_rng() -> GlobalRng {
     crate::context::current(|h| h.rand.clone())
 }
@@ -156,7 +156,7 @@ where
 }
 
 /// Random log for determinism check.
-#[cfg_attr(docsrs, doc(cfg(madsim)))]
+#[cfg_attr(docsrs, doc(cfg(msim)))]
 #[derive(Debug, PartialEq, Eq)]
 pub struct Log(Vec<u8>);
 
@@ -191,7 +191,7 @@ unsafe extern "C" fn getrandom(mut buf: *mut u8, mut buflen: usize, _flags: u32)
         SEED.with(|s| s.set(None));
         return 16;
     } else if let Some(rand) = crate::context::try_current(|h| h.rand.clone()) {
-        // inside a madsim context, use the global RNG.
+        // inside a msim context, use the global RNG.
         let len = buflen;
         while buflen >= std::mem::size_of::<u64>() {
             (buf as *mut u64).write(rand.with(|rng| rng.gen()));
@@ -204,7 +204,7 @@ unsafe extern "C" fn getrandom(mut buf: *mut u8, mut buflen: usize, _flags: u32)
     }
     #[cfg(target_os = "linux")]
     {
-        // not in madsim, call the original function.
+        // not in msim, call the original function.
         lazy_static::lazy_static! {
             static ref GETRANDOM: unsafe extern "C" fn(buf: *mut u8, buflen: usize, flags: u32) -> isize = unsafe {
                 let ptr = libc::dlsym(libc::RTLD_NEXT, b"getrandom\0".as_ptr() as _);

@@ -2,10 +2,10 @@
 name = "tokio"
 version = "1.20.1"
 edition = "2021"
-authors = ["Runji Wang <wangrunji0408@163.com>"]
-description = "The `tokio` simulator on madsim."
-homepage = "https://github.com/madsys-dev/madsim"
-repository = "https://github.com/madsys-dev/madsim"
+authors = ["Runji Wang <wangrunji0408@163.com>", "Mysten Labs <build@mystenlabs.com>"]
+description = "The `tokio` simulator on msim."
+homepage = "https://github.com/MystenLabs/mysten-simulator"
+repository = "https://github.com/MystenLabs/mysten-simulator"
 categories = ["asynchronous", "network-programming", "simulation"]
 keywords = ["io", "async", "non-blocking", "futures", "simulator"]
 readme = "README.md"
@@ -57,8 +57,8 @@ stats = ["real_tokio/stats"]
 tokio-macros = ["real_tokio/tokio-macros"]
 
 
-[target.'cfg(madsim)'.dependencies]
-madsim = { version = "=0.2.0-alpha.3", path = "../madsim" }
+[target.'cfg(msim)'.dependencies]
+msim = { version = "0.1.0", path = "../msim" }
 
 [dependencies]
 tracing = "0.1"

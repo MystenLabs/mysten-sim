@@ -10,7 +10,7 @@ use ahash::AHasher;
 use serde::{Deserialize, Serialize};
 
 /// Simulation configuration.
-#[cfg_attr(docsrs, doc(cfg(madsim)))]
+#[cfg_attr(docsrs, doc(cfg(msim)))]
 #[derive(Debug, Default, Serialize, Deserialize, PartialEq, Hash, Clone)]
 pub struct Config {
     /// Network configurations.

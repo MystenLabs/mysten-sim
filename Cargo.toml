@@ -1,8 +1,8 @@
 [workspace]
 members = [
-    "madsim",
-    "madsim-macros",
-    "madsim-tokio",
+    "msim",
+    "msim-macros",
+    "msim-tokio",
 ]
 exclude = [
     "tokio",

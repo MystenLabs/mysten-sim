@@ -3,7 +3,7 @@
 //! # Examples
 //!
 //! ```
-//! use madsim::{runtime::Runtime, net::Endpoint};
+//! use msim::{runtime::Runtime, net::Endpoint};
 //! use std::sync::Arc;
 //! use std::net::SocketAddr;
 //!
@@ -60,7 +60,7 @@ pub mod network;
 pub mod rpc;
 
 /// Network simulator.
-#[cfg_attr(docsrs, doc(cfg(madsim)))]
+#[cfg_attr(docsrs, doc(cfg(msim)))]
 pub struct NetSim {
     network: Mutex<Network>,
     rand: GlobalRng,
@@ -257,7 +257,7 @@ impl Endpoint {
     ///
     /// # Example
     /// ```
-    /// use madsim::{runtime::Runtime, net::Endpoint};
+    /// use msim::{runtime::Runtime, net::Endpoint};
     ///
     /// Runtime::new().block_on(async {
     ///     let net = Endpoint::bind("127.0.0.1:0").await.unwrap();
@@ -274,7 +274,7 @@ impl Endpoint {
     ///
     /// # Example
     /// ```no_run
-    /// use madsim::{runtime::Runtime, net::Endpoint};
+    /// use msim::{runtime::Runtime, net::Endpoint};
     ///
     /// Runtime::new().block_on(async {
     ///     let net = Endpoint::bind("127.0.0.1:0").await.unwrap();
@@ -313,7 +313,7 @@ impl Endpoint {
     ///
     /// NOTE: Applications should not use this function!
     /// It is provided for use by other simulators.
-    #[cfg_attr(docsrs, doc(cfg(madsim)))]
+    #[cfg_attr(docsrs, doc(cfg(msim)))]
     pub async fn send_to_raw(&self, dst: SocketAddr, tag: u64, data: Payload) -> io::Result<()> {
         trace!("send_to_raw {} -> {}, {}", self.addr, dst, tag);
         self.net
@@ -329,7 +329,7 @@ impl Endpoint {
     ///
     /// NOTE: Applications should not use this function!
     /// It is provided for use by other simulators.
-    #[cfg_attr(docsrs, doc(cfg(madsim)))]
+    #[cfg_attr(docsrs, doc(cfg(msim)))]
     pub async fn recv_from_raw(&self, tag: u64) -> io::Result<(Payload, SocketAddr)> {
         let recver = self
             .net
@@ -350,7 +350,7 @@ impl Endpoint {
     ///
     /// NOTE: Applications should not use this function!
     /// It is provided for use by other simulators.
-    #[cfg_attr(docsrs, doc(cfg(madsim)))]
+    #[cfg_attr(docsrs, doc(cfg(msim)))]
     pub async fn send_raw(&self, tag: u64, data: Payload) -> io::Result<()> {
         let peer = self.peer_addr()?;
         self.send_to_raw(peer, tag, data).await
@@ -360,7 +360,7 @@ impl Endpoint {
     ///
     /// NOTE: Applications should not use this function!
     /// It is provided for use by other simulators.
-    #[cfg_attr(docsrs, doc(cfg(madsim)))]
+    #[cfg_attr(docsrs, doc(cfg(msim)))]
     pub async fn recv_raw(&self, tag: u64) -> io::Result<Payload> {
         let peer = self.peer_addr()?;
         let (msg, from) = self.recv_from_raw(tag).await?;

@@ -1,9 +1,9 @@
-# madsim-tokio
+# msim-tokio
 
-[![Crate](https://img.shields.io/crates/v/madsim-tokio.svg)](https://crates.io/crates/madsim-tokio)
-[![Docs](https://docs.rs/madsim-tokio/badge.svg)](https://docs.rs/madsim-tokio)
+[![Crate](https://img.shields.io/crates/v/msim-tokio.svg)](https://crates.io/crates/msim-tokio)
+[![Docs](https://docs.rs/msim-tokio/badge.svg)](https://docs.rs/msim-tokio)
 
-The `tokio` simulator on madsim.
+The `tokio` simulator on msim.
 
 > If it looks like tokio, acts like tokio, and is used like tokio, then it probably is tokio.
 
@@ -13,5 +13,5 @@ Replace all `tokio` entries in your Cargo.toml:
 
 ```toml
 [dependencies]
-tokio = { version = "=0.2.0-alpha.3", package = "madsim-tokio" }
+tokio = { version = "0.1.0", package = "msim-tokio" }
 ```

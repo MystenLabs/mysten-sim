@@ -23,22 +23,22 @@ pub fn service(args: TokenStream, input: TokenStream) -> TokenStream {
 #[allow(clippy::needless_doctest_main)]
 /// Marks async function to be executed by the selected runtime. This macro
 /// helps set up a `Runtime` without requiring the user to use
-/// [Runtime](../madsim/runtime/struct.Runtime.html) directly.
+/// [Runtime](../msim/runtime/struct.Runtime.html) directly.
 ///
 /// # Example
 ///
 /// ```ignore
-/// #[madsim::main]
+/// #[msim::main]
 /// async fn main() {
 ///     println!("Hello world");
 /// }
 /// ```
 ///
-/// Equivalent code not using `#[madsim::main]`
+/// Equivalent code not using `#[msim::main]`
 ///
 /// ```ignore
 /// fn main() {
-///     madsim::runtime::Runtime::new().block_on(async {
+///     msim::runtime::Runtime::new().block_on(async {
 ///         println!("Hello world");
 ///     });
 /// }
@@ -64,7 +64,7 @@ fn parse_main(
     let brace_token = input.block.brace_token;
     input.block = syn::parse2(quote! {
         {
-            let mut rt = ::madsim::runtime::Runtime::new();
+            let mut rt = ::msim::runtime::Runtime::new();
             rt.block_on(async #body)
         }
     })
@@ -103,7 +103,7 @@ pub fn test(_args: TokenStream, item: TokenStream) -> TokenStream {
 ///
 /// # Example
 /// ```ignore
-/// #[madsim::test]
+/// #[msim::test]
 /// async fn my_test() {
 ///     assert!(true);
 /// }
@@ -173,7 +173,7 @@ fn parse_test(mut input: syn::ItemFn, args: syn::AttributeArgs) -> Result<TokenS
         let end = last_stmt.last().map_or(start, |t| t.span());
         (start, end)
     };
-    let crate_name = test_config.crate_name.as_deref().unwrap_or("madsim");
+    let crate_name = test_config.crate_name.as_deref().unwrap_or("msim");
     let crate_ident = Ident::new(crate_name, last_stmt_start_span);
 
     let body: Box<syn::Block> = if test_config.run_in_client_node {

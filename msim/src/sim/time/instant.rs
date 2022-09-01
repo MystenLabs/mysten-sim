@@ -41,7 +41,7 @@ impl Instant {
     /// # Examples
     ///
     /// ```ignore
-    /// use madsim::time::Instant;
+    /// use msim::time::Instant;
     ///
     /// let now = Instant::now();
     /// ```
@@ -50,7 +50,7 @@ impl Instant {
         handle.now_instant()
     }
 
-    /// Create a `madsim::time::Instant` from a `std::time::Instant`.
+    /// Create a `msim::time::Instant` from a `std::time::Instant`.
     pub fn from_std(std: std::time::Instant) -> Instant {
         Instant { std }
     }
@@ -75,9 +75,9 @@ impl Instant {
     /// # Examples
     ///
     /// ```ignore
-    /// use madsim::time::{Duration, Instant, sleep};
+    /// use msim::time::{Duration, Instant, sleep};
     ///
-    /// #[madsim::main]
+    /// #[msim::main]
     /// async fn main() {
     ///     let now = Instant::now();
     ///     sleep(Duration::new(1, 0)).await;
@@ -96,9 +96,9 @@ impl Instant {
     /// # Examples
     ///
     /// ```ignore
-    /// use madsim::time::{Duration, Instant, sleep};
+    /// use msim::time::{Duration, Instant, sleep};
     ///
-    /// #[madsim::main]
+    /// #[msim::main]
     /// async fn main() {
     ///     let now = Instant::now();
     ///     sleep(Duration::new(1, 0)).await;
@@ -122,9 +122,9 @@ impl Instant {
     /// # Examples
     ///
     /// ```ignore
-    /// use madsim::time::{Duration, Instant, sleep};
+    /// use msim::time::{Duration, Instant, sleep};
     ///
-    /// #[madsim::main]
+    /// #[msim::main]
     /// async fn main() {
     ///     let instant = Instant::now();
     ///     let three_secs = Duration::from_secs(3);

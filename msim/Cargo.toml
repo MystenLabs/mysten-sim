@@ -1,12 +1,12 @@
 [package]
-name = "madsim"
-version = "0.2.0-alpha.3"
+name = "msim"
+version = "0.1.0"
 edition = "2021"
-authors = ["Runji Wang <wangrunji0408@163.com>"]
+authors = ["Runji Wang <wangrunji0408@163.com>", "Mysten Labs <build@mystenlabs.com>"]
 description = "Deterministic Simulator for distributed systems."
 readme = "../README.md"
-homepage = "https://github.com/madsys-dev/madsim"
-repository = "https://github.com/madsys-dev/madsim"
+homepage = "https://github.com/MystenLabs/mysten-simulator"
+repository = "https://github.com/MystenLabs/mysten-simulator"
 license = "Apache-2.0"
 keywords = ["distributed-systems", "async", "deterministic", "simulation"]
 categories = ["asynchronous", "simulation"]
@@ -16,7 +16,7 @@ categories = ["asynchronous", "simulation"]
 default = ["macros", "rpc"]
 ucx = ["async-ucx"]
 rpc = ["bincode"]
-macros = ["madsim-macros", "tokio/macros"]
+macros = ["msim-macros", "tokio/macros"]
 
 [dependencies]
 bincode = { version = "1", optional = true }
@@ -26,21 +26,20 @@ futures = "0.3"
 lazy_static = "1.4"
 tracing = "0.1"
 tracing-subscriber = "0.3"
-madsim-macros = { version = "=0.2.0-alpha.3", path = "../madsim-macros", optional = true }
+msim-macros = { version = "0.1.0", path = "../msim-macros", optional = true }
 rand = { version = "0.8", features = ["small_rng"] }
 serde = { version = "1", features = ["derive"] }
 
-[target.'cfg(madsim)'.dependencies]
+[target.'cfg(msim)'.dependencies]
 ahash = "0.7"
 async-task = "4"
 downcast-rs = "1.2"
 libc = "0.2"
 naive-timer = "0.2"
-#tokio = { version = "1", features = ["rt"] }
 tokio = { path = "../tokio/tokio", package = "real_tokio" }
 toml = "0.5"
 
-[target.'cfg(not(madsim))'.dependencies]
+[target.'cfg(not(msim))'.dependencies]
 async-ucx = { version = "0.1", features = ["event"], optional = true }
 #tokio = { version = "1", features = ["rt", "fs", "net", "time", "io-util", "sync"] }
 tokio = { path = "../tokio/tokio", package = "real_tokio", features = ["rt", "fs", "net", "time", "io-util", "sync"] }
@@ -57,5 +56,5 @@ harness = false
 
 [package.metadata.docs.rs]
 # all-features = true
-rustc-args = ["--cfg", "madsim"]
-rustdoc-args = ["--cfg", "madsim", "--cfg", "docsrs"]
+rustc-args = ["--cfg", "msim"]
+rustdoc-args = ["--cfg", "msim", "--cfg", "docsrs"]

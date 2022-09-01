@@ -1,4 +1,4 @@
-//! The madsim runtime.
+//! The msim runtime.
 
 use super::*;
 use crate::assert_send_sync;
@@ -19,7 +19,7 @@ use tracing::warn;
 
 pub(crate) mod context;
 
-/// The madsim runtime.
+/// The msim runtime.
 ///
 /// The runtime provides basic components for deterministic simulation,
 /// including a [random number generator], [timer], [task scheduler], and
@@ -53,7 +53,7 @@ impl Runtime {
     /// Create a new runtime instance with given seed and config.
     pub fn with_seed_and_config(seed: u64, config: Config) -> Self {
         let mut rand = rand::GlobalRng::new_with_seed(seed);
-        tokio::madsim_adapter::util::reset_rng(rand.gen::<u64>());
+        tokio::msim_adapter::util::reset_rng(rand.gen::<u64>());
         let task = task::Executor::new(rand.clone());
         let handle = Handle {
             rand: rand.clone(),
@@ -106,7 +106,7 @@ impl Runtime {
     /// # Example
     ///
     /// ```
-    /// use madsim::runtime::Runtime;
+    /// use msim::runtime::Runtime;
     ///
     /// let rt = Runtime::new();
     /// let ret = rt.block_on(async { 1 });
@@ -117,7 +117,7 @@ impl Runtime {
     /// panic instead of blocking.
     ///
     /// ```should_panic
-    /// use madsim::runtime::Runtime;
+    /// use msim::runtime::Runtime;
     /// use futures::future::pending;
     ///
     /// Runtime::new().block_on(pending::<()>());
@@ -134,7 +134,7 @@ impl Runtime {
     /// # Example
     ///
     /// ```should_panic
-    /// use madsim::{runtime::Runtime, time::{sleep, Duration}};
+    /// use msim::{runtime::Runtime, time::{sleep, Duration}};
     ///
     /// let mut rt = Runtime::new();
     /// rt.set_time_limit(Duration::from_secs(1));
@@ -152,12 +152,12 @@ impl Runtime {
     /// # Example
     ///
     /// ```should_panic
-    /// use madsim::{runtime::Runtime, time::{sleep, Duration}};
+    /// use msim::{runtime::Runtime, time::{sleep, Duration}};
     /// use rand::Rng;
     ///
     /// let f = || async {
     ///     for _ in 0..10 {
-    ///         madsim::rand::thread_rng().gen::<u64>();
+    ///         msim::rand::thread_rng().gen::<u64>();
     ///         // introduce non-determinism
     ///         let rand_num = rand::thread_rng().gen_range(0..10);
     ///         sleep(Duration::from_nanos(rand_num)).await;
@@ -211,7 +211,7 @@ impl Handle {
     /// This will panic if called outside the context of a Madsim runtime.
     ///
     /// ```should_panic
-    /// let handle = madsim::runtime::Handle::current();
+    /// let handle = msim::runtime::Handle::current();
     /// ```
     pub fn current() -> Self {
         context::current(|h| h.clone())

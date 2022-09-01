@@ -16,7 +16,7 @@ use std::{
 
 pub use std::net::ToSocketAddrs;
 
-use madsim::net::{network::Payload, Endpoint};
+use msim::net::{network::Payload, Endpoint};
 
 use real_tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 
@@ -696,7 +696,7 @@ mod tests {
     use bytes::{BufMut, BytesMut};
     use futures::join;
     use tracing::trace;
-    use madsim::{rand, rand::RngCore, runtime::Runtime};
+    use msim::{rand, rand::RngCore, runtime::Runtime};
     use real_tokio::{
         io::{AsyncReadExt, AsyncWriteExt},
         sync::Barrier,

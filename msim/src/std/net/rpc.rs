@@ -13,7 +13,7 @@
 //! # Examples
 //!
 //! ```
-//! use madsim::net::{Endpoint, rpc::*};
+//! use msim::net::{Endpoint, rpc::*};
 //! use std::sync::Arc;
 //! use std::net::SocketAddr;
 //!

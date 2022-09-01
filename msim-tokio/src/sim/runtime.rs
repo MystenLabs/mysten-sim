@@ -3,8 +3,8 @@ use std::future::Future;
 use std::io;
 use std::time::Duration;
 
-use madsim::runtime as ms_runtime;
-use madsim::task::JoinHandle;
+use msim::runtime as ms_runtime;
+use msim::task::JoinHandle;
 
 use tracing::debug;
 

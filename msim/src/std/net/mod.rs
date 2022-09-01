@@ -3,7 +3,7 @@
 //! # Examples
 //!
 //! ```
-//! use madsim::net::Endpoint;
+//! use msim::net::Endpoint;
 //! use std::net::SocketAddr;
 //!
 //! let runtime = tokio::runtime::Runtime::new().unwrap();
