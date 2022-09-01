@@ -301,9 +301,13 @@ assert_send_sync!(TaskNodeHandle);
 
 impl TaskNodeHandle {
     pub fn current() -> Self {
-        let info = crate::context::current_task();
-        let sender = crate::context::current(|h| h.task.sender.clone());
-        TaskNodeHandle { sender, info }
+        Self::try_current().unwrap()
+    }
+
+    pub fn try_current() -> Option<Self> {
+        let info = crate::context::try_current_task()?;
+        let sender = crate::context::try_current(|h| h.task.sender.clone())?;
+        Some(TaskNodeHandle { sender, info })
     }
 
     pub(crate) fn id(&self) -> NodeId {

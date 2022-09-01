@@ -339,8 +339,13 @@ pub struct NodeHandle {
 impl NodeHandle {
     /// Get handle to current Node
     pub fn current() -> Self {
-        let task = task::TaskNodeHandle::current();
-        Self { task }
+        Self::try_current().unwrap()
+    }
+
+    /// Get handle to current Node if there is one
+    pub fn try_current() -> Option<Self> {
+        let task = task::TaskNodeHandle::try_current()?;
+        Some(Self { task })
     }
 
     /// Returns the node ID.
