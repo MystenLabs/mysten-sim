@@ -113,27 +113,27 @@ pub fn test(_args: TokenStream, item: TokenStream) -> TokenStream {
 ///
 /// Test can be configured using the following environment variables:
 ///
-/// - `MADSIM_TEST_SEED`: Set the random seed for test.
+/// - `MSIM_TEST_SEED`: Set the random seed for test.
 ///
 ///     By default, the seed is set to the seconds since the Unix epoch.
 ///
-/// - `MADSIM_TEST_NUM`: Set the number of tests.
+/// - `MSIM_TEST_NUM`: Set the number of tests.
 ///
 ///     The seed will increase by 1 for each test.
 ///
 ///     By default, the number is 1.
 ///
-/// - `MADSIM_TEST_CONFIG`: Set the config file path.
+/// - `MSIM_TEST_CONFIG`: Set the config file path.
 ///
 ///     By default, tests will use the default configuration.
 ///
-/// - `MADSIM_TEST_TIME_LIMIT`: Set the time limit for the test.
+/// - `MSIM_TEST_TIME_LIMIT`: Set the time limit for the test.
 ///
 ///     The test will panic if time limit exceeded in the simulation.
 ///
 ///     By default, there is no time limit.
 ///
-/// - `MADSIM_TEST_CHECK_DETERMINISM`: Enable determinism check.
+/// - `MSIM_TEST_CHECK_DETERMINISM`: Enable determinism check.
 ///
 ///     The test will be run at least twice with the same seed.
 ///     If any non-determinism detected, it will panic as soon as possible.
@@ -209,26 +209,26 @@ fn parse_test(mut input: syn::ItemFn, args: syn::AttributeArgs) -> Result<TokenS
     let brace_token = input.block.brace_token;
     input.block = syn::parse2(quote_spanned! {last_stmt_end_span=>
         {
-            let seed: u64 = if let Ok(seed_str) = ::std::env::var("MADSIM_TEST_SEED") {
-                seed_str.parse().expect("MADSIM_TEST_SEED should be an integer")
+            let seed: u64 = if let Ok(seed_str) = ::std::env::var("MSIM_TEST_SEED") {
+                seed_str.parse().expect("MSIM_TEST_SEED should be an integer")
             } else {
                 ::std::time::SystemTime::now().duration_since(::std::time::SystemTime::UNIX_EPOCH).unwrap().as_secs()
             };
-            let config = if let Ok(config_path) = std::env::var("MADSIM_TEST_CONFIG") {
+            let config = if let Ok(config_path) = std::env::var("MSIM_TEST_CONFIG") {
                 let content = std::fs::read_to_string(config_path).expect("failed to read config file");
                 content.parse::<::#crate_ident::Config>().expect("failed to parse config file")
             } else {
                 ::#crate_ident::Config::default()
             };
-            let mut count: u64 = if let Ok(num_str) = std::env::var("MADSIM_TEST_NUM") {
-                num_str.parse().expect("MADSIM_TEST_NUM should be an integer")
+            let mut count: u64 = if let Ok(num_str) = std::env::var("MSIM_TEST_NUM") {
+                num_str.parse().expect("MSIM_TEST_NUM should be an integer")
             } else {
                 1
             };
-            let time_limit_s = std::env::var("MADSIM_TEST_TIME_LIMIT").ok().map(|num_str| {
-                num_str.parse::<f64>().expect("MADSIM_TEST_TIME_LIMIT should be an number")
+            let time_limit_s = std::env::var("MSIM_TEST_TIME_LIMIT").ok().map(|num_str| {
+                num_str.parse::<f64>().expect("MSIM_TEST_TIME_LIMIT should be an number")
             });
-            let check = ::std::env::var("MADSIM_TEST_CHECK_DETERMINISM").is_ok() || #check_determinism;
+            let check = ::std::env::var("MSIM_TEST_CHECK_DETERMINISM").is_ok() || #check_determinism;
             if check {
                 count = count.max(2);
             }
@@ -257,8 +257,8 @@ fn parse_test(mut input: syn::ItemFn, args: syn::AttributeArgs) -> Result<TokenS
                         rand_log = log;
                     }
                     Err(e) => {
-                        println!("note: run with `MADSIM_TEST_SEED={}` environment variable to reproduce this error", seed);
-                        println!("      and make sure `MADSIM_CONFIG_HASH={:016X}`", config.hash());
+                        println!("note: run with `MSIM_TEST_SEED={}` environment variable to reproduce this error", seed);
+                        println!("      and make sure `MSIM_CONFIG_HASH={:016X}`", config.hash());
                         ::std::panic::resume_unwind(e);
                     }
                 }
