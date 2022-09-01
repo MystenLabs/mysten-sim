@@ -198,8 +198,10 @@ unsafe extern "C" fn getrandom(mut buf: *mut u8, mut buflen: usize, _flags: u32)
             buf = buf.add(std::mem::size_of::<u64>());
             buflen -= std::mem::size_of::<u64>();
         }
-        let val = rand.with(|rng| rng.gen::<u64>().to_ne_bytes());
-        core::ptr::copy(val.as_ptr(), buf, buflen);
+        if buflen > 0 {
+            let val = rand.with(|rng| rng.gen::<u64>().to_ne_bytes());
+            core::ptr::copy(val.as_ptr(), buf, buflen);
+        }
         return len as _;
     }
     #[cfg(target_os = "linux")]
@@ -258,7 +260,6 @@ mod tests {
     use std::collections::{BTreeSet, HashMap};
 
     #[test]
-    #[cfg_attr(target_os = "linux", ignore)]
     // NOTE:
     //   Deterministic rand is only available on macOS.
     //   On linux, the call stack is `rand` -> `getrandom` -> `SYS_getrandom`,

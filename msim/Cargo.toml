@@ -29,6 +29,9 @@ msim-macros = { version = "0.1.0", path = "../msim-macros", optional = true }
 rand = { version = "0.8", features = ["small_rng"] }
 serde = { version = "1", features = ["derive"] }
 
+[build-dependencies]
+cc = { version = "1.0" }
+
 [target.'cfg(msim)'.dependencies]
 ahash = "0.7"
 async-task = "4"
