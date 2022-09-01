@@ -17,12 +17,6 @@ mod sim;
 #[cfg(msim)]
 pub use sim::*;
 
-#[cfg(not(msim))]
-#[path = "std/mod.rs"]
-mod _std;
-#[cfg(not(msim))]
-pub use _std::*;
-
 // Includes re-exports used by macros.
 #[doc(hidden)]
 pub mod export {
