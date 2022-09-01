@@ -35,14 +35,14 @@ async-task = "4"
 downcast-rs = "1.2"
 libc = "0.2"
 naive-timer = "0.2"
-tokio = { path = "../tokio/tokio", package = "real_tokio", features = ["full"] }
-tokio-util = { path = "../tokio/tokio-util", features = ["full"] }
+tokio = { git = "https://github.com/mystenmark/tokio-madsim-fork.git", rev = "8ca4c94029ac1b7c8342720820e6100e9f31a372", package = "real_tokio", features = ["full"] }
+tokio-util = { git = "https://github.com/mystenmark/tokio-madsim-fork.git", rev = "8ca4c94029ac1b7c8342720820e6100e9f31a372", features = ["full"] }
 toml = "0.5"
 
 [dev-dependencies]
 criterion = "0.3"
 structopt = "0.3"
-tokio = { version = "1", path = "../tokio/tokio", package = "real_tokio", features = ["rt-multi-thread", "macros"] }
+tokio = { git = "https://github.com/mystenmark/tokio-madsim-fork.git", rev = "8ca4c94029ac1b7c8342720820e6100e9f31a372", package = "real_tokio", features = ["full"] }
 
 [[bench]]
 name = "rpc"
