@@ -21,8 +21,10 @@ unsafe fn getrandom(
 
 */
 
+__thread void* libc_syscall_fn = NULL;
+
 ssize_t syscall(long call, ...) {
-    if (call == SYS_getrandom /* SYS_getrandom */) {
+    if (call == SYS_getrandom) {
       va_list args;
       va_start(args, call);
       void* buf = va_arg(args, void*);
@@ -31,9 +33,13 @@ ssize_t syscall(long call, ...) {
       return getrandom(buf, len, flags);
     }
 
-    void* ptr = dlsym(RTLD_NEXT, "syscall");
+    if (libc_syscall_fn == NULL) {
+      libc_syscall_fn = dlsym(RTLD_NEXT, "syscall");
+    }
 
+    // only way to forward varargs is with gcc builtins, but we only need this on
+    // linux so its okay to be non-portable.
     void *args = __builtin_apply_args();
-    void *ret = __builtin_apply((void (*)())ptr, args, 64 * 8);
+    void *ret = __builtin_apply((void (*)())libc_syscall_fn, args, 64 * 8);
     __builtin_return(ret);
 }
