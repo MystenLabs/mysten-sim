@@ -35,13 +35,13 @@
 //! runtime.block_on(f);
 //! ```
 
-use tracing::*;
 use std::{
     collections::{hash_map::Entry, HashMap},
     io,
     net::{IpAddr, Ipv4Addr, SocketAddr, ToSocketAddrs},
     sync::{Arc, Mutex},
 };
+use tracing::*;
 
 pub use self::network::{Config, Stat};
 use self::network::{Network, Payload};
@@ -315,7 +315,7 @@ impl Endpoint {
     /// It is provided for use by other simulators.
     #[cfg_attr(docsrs, doc(cfg(msim)))]
     pub async fn send_to_raw(&self, dst: SocketAddr, tag: u64, data: Payload) -> io::Result<()> {
-        trace!("send_to_raw {} -> {}, {}", self.addr, dst, tag);
+        trace!("send_to_raw {} -> {}, {:x}", self.addr, dst, tag);
         self.net
             .network
             .lock()
@@ -331,6 +331,7 @@ impl Endpoint {
     /// It is provided for use by other simulators.
     #[cfg_attr(docsrs, doc(cfg(msim)))]
     pub async fn recv_from_raw(&self, tag: u64) -> io::Result<(Payload, SocketAddr)> {
+        trace!("awaiting recv: {} tag={:x}", self.addr, tag);
         let recver = self
             .net
             .network
@@ -342,7 +343,7 @@ impl Endpoint {
             .map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "network is down"))?;
         self.net.rand_delay().await;
 
-        trace!("recv: {} <- {}, tag={}", self.addr, msg.from, msg.tag);
+        trace!("recv: {} <- {}, tag={:x}", self.addr, msg.from, msg.tag);
         Ok((msg.data, msg.from))
     }
 

@@ -1,6 +1,5 @@
 use crate::{rand::*, task::NodeId, time::TimeHandle};
 use futures::channel::oneshot;
-use tracing::*;
 use serde::{Deserialize, Serialize};
 use std::{
     any::Any,
@@ -12,6 +11,7 @@ use std::{
     sync::{Arc, Mutex},
     time::Duration,
 };
+use tracing::*;
 
 /// A simulated network.
 pub(crate) struct Network {
@@ -211,7 +211,7 @@ impl Network {
         tag: u64,
         data: Payload,
     ) {
-        trace!("send: {node} {src} -> {dst}, tag={tag}");
+        trace!("send: {node} {src} -> {dst}, tag={tag:x}");
         let dst_node = if dst.ip().is_loopback() {
             node
         } else if let Some(x) = self.addr_to_node.get(&dst.ip()) {
@@ -247,6 +247,7 @@ impl Network {
         trace!("delay: {latency:?}");
         self.time
             .add_timer(self.time.now_instant() + latency, move || {
+                trace!("deliver: {node} {src} -> {dst}, tag={tag:x}");
                 ep.lock().unwrap().deliver(msg);
             });
         self.stat.msg_count += 1;
