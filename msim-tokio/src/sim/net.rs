@@ -321,7 +321,7 @@ impl TcpStream {
 
         // read the remote port back
         trace!(
-            "reading remote port from server {} {}",
+            "awaiting remote port from server {} {}",
             remote_sock,
             local_port
         );
@@ -330,6 +330,11 @@ impl TcpStream {
         debug_assert_eq!(from, remote_sock);
         // finish initializing state
         state.remote_port = Message::new(msg).unwrap_port();
+        trace!(
+            "received remote port from server {} <- {}",
+            state.remote_sock,
+            from
+        );
         Ok(Self::new(state))
     }
 
@@ -695,13 +700,13 @@ mod tests {
     use super::{OwnedReadHalf, OwnedWriteHalf, TcpListener, TcpStream};
     use bytes::{BufMut, BytesMut};
     use futures::join;
-    use tracing::trace;
     use msim::{rand, rand::RngCore, runtime::Runtime};
     use real_tokio::{
         io::{AsyncReadExt, AsyncWriteExt},
         sync::Barrier,
     };
     use std::{net::SocketAddr, sync::Arc};
+    use tracing::trace;
 
     async fn test_stream_read(mut stream: OwnedReadHalf) {
         trace!("test_stream_read");
