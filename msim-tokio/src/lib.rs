@@ -19,6 +19,7 @@ mod sim {
     #[cfg(all(feature = "rt", feature = "macros"))]
     pub use msim::{sim_test, test};
 
+    pub mod io;
     pub mod net;
     mod udp;
     pub mod unix;
@@ -27,13 +28,13 @@ mod sim {
     // TODO: simulate `fs`
     #[cfg(feature = "fs")]
     pub use real_tokio::fs;
+    pub use real_tokio::pin;
     #[cfg(feature = "process")]
     pub use real_tokio::process;
     #[cfg(feature = "signal")]
     pub use real_tokio::signal;
     #[cfg(feature = "sync")]
     pub use real_tokio::sync;
-    pub use real_tokio::{io, pin};
     #[cfg(feature = "macros")]
     pub use real_tokio::{join, main, select, try_join};
 }

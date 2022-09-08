@@ -30,26 +30,46 @@ macro_rules! define_sys_interceptor {
         #[no_mangle]
         #[inline(never)]
         unsafe extern "C" fn $name ( $($param: $type),* ) -> $ret {
-            {
-                lazy_static::lazy_static! {
-                    static ref NEXT_DL_SYM: unsafe extern "C" fn ( $($param: $type),* ) -> $ret = unsafe {
+            lazy_static::lazy_static! {
+                static ref NEXT_DL_SYM: unsafe extern "C" fn ( $($param: $type),* ) -> $ret = unsafe {
 
-                        let fn_name = stringify!($name);
-                        let fn_name_c = std::ffi::CString::new(fn_name).unwrap();
+                    let fn_name = stringify!($name);
+                    let fn_name_c = std::ffi::CString::new(fn_name).unwrap();
 
-                        let ptr = libc::dlsym(libc::RTLD_NEXT, fn_name_c.as_ptr() as _);
-                        assert!(!ptr.is_null());
-                        std::mem::transmute(ptr)
-                    };
-                }
+                    let ptr = libc::dlsym(libc::RTLD_NEXT, fn_name_c.as_ptr() as _);
+                    assert!(!ptr.is_null());
+                    std::mem::transmute(ptr)
+                };
+            }
 
-                if !crate::sim::intercept::intercepts_enabled() {
-                    return NEXT_DL_SYM($($param),*);
-                }
+            if !crate::sim::intercept::intercepts_enabled() {
+                return NEXT_DL_SYM($($param),*);
             }
 
             $($body)*
+        }
+    }
+}
 
+/// define a function that can be used to bypass a interception (as defined by
+/// define_sys_interceptor.
+#[macro_export]
+macro_rules! define_bypass {
+    ($name:ident, fn $cname:ident ( $($param:ident : $type:ty),* $(,)? ) -> $ret:ty) => {
+        unsafe fn $name ( $($param: $type),* ) -> $ret {
+            lazy_static::lazy_static! {
+                static ref NEXT_DL_SYM: unsafe extern "C" fn ( $($param: $type),* ) -> $ret = unsafe {
+
+                    let fn_name = stringify!($cname);
+                    let fn_name_c = std::ffi::CString::new(fn_name).unwrap();
+
+                    let ptr = libc::dlsym(libc::RTLD_NEXT, fn_name_c.as_ptr() as _);
+                    assert!(!ptr.is_null());
+                    std::mem::transmute(ptr)
+                };
+            }
+
+            return NEXT_DL_SYM($($param),*);
         }
     }
 }

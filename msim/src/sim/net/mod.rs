@@ -40,13 +40,14 @@ use std::{
     io,
     net::{IpAddr, Ipv4Addr, SocketAddr, ToSocketAddrs},
     sync::{Arc, Mutex},
+    task::Context,
 };
 use tracing::*;
 
 pub use self::network::{Config, Stat};
 use self::network::{Network, Payload};
 use crate::{
-    plugin,
+    define_bypass, define_sys_interceptor, plugin,
     rand::{GlobalRng, Rng},
     task::NodeId,
     time::{Duration, TimeHandle},
@@ -63,10 +64,486 @@ pub mod rpc;
 #[cfg_attr(docsrs, doc(cfg(msim)))]
 pub struct NetSim {
     network: Mutex<Network>,
+    host_state: Mutex<HostNetworkState>,
     rand: GlobalRng,
     time: TimeHandle,
     next_port_map: Mutex<HashMap<NodeId, u32>>,
 }
+
+#[derive(Debug)]
+struct FileDes(libc::c_int);
+
+impl Drop for FileDes {
+    fn drop(&mut self) {
+        unsafe {
+            assert_eq!(bypass_close(self.0), 0);
+        }
+    }
+}
+
+#[derive(Debug)]
+struct SocketState {
+    ty: libc::c_int,
+    _placeholder_file: FileDes,
+    endpoint: Option<Arc<Endpoint>>,
+}
+
+#[derive(Default)]
+struct HostNetworkState {
+    sockets: HashMap<(NodeId, libc::c_int), SocketState>,
+}
+
+impl HostNetworkState {
+    fn add_socket(fd: libc::c_int, socket: SocketState) {
+        let net = plugin::simulator::<NetSim>();
+        let node_id = plugin::node();
+        let mut host_state = net.host_state.lock().unwrap();
+        trace!("registering socket {}.{} -> {:?}", node_id, fd, socket);
+
+        assert!(
+            host_state.sockets.insert((node_id, fd), socket).is_none(),
+            "duplicate socket"
+        );
+    }
+
+    fn bind_socket(fd: libc::c_int, addr: SocketAddr) -> libc::c_int {
+        let net = plugin::simulator::<NetSim>();
+        let node_id = plugin::node();
+        let mut host_state = net.host_state.lock().unwrap();
+
+        trace!("binding socket {}.{} -> {:?}", node_id, fd, addr);
+
+        let socket = host_state.sockets.get_mut(&(node_id, fd)).unwrap();
+        assert!(socket.endpoint.is_none(), "socket already bound");
+        socket.endpoint = Some(Arc::new(Endpoint::bind_sync(addr).unwrap()));
+        0
+    }
+
+    fn close_socket(fd: libc::c_int) -> bool {
+        let net = plugin::simulator::<NetSim>();
+        let node_id = plugin::node();
+        let mut host_state = net.host_state.lock().unwrap();
+
+        let res = host_state.sockets.remove(&(node_id, fd)).is_some();
+        if res {
+            trace!("closing socket {}.{}", node_id, fd);
+        }
+        res
+    }
+
+    fn get_socket_addr(fd: libc::c_int) -> Option<SocketAddr> {
+        let net = plugin::simulator::<NetSim>();
+        let node_id = plugin::node();
+        let host_state = net.host_state.lock().unwrap();
+
+        let socket = host_state.sockets.get(&(node_id, fd))?;
+        socket.endpoint.as_ref().map(|ep| ep.local_addr().unwrap())
+    }
+
+    fn with_socket<T>(fd: libc::c_int, cb: impl Fn(&mut SocketState) -> T) -> io::Result<T> {
+        let net = plugin::simulator::<NetSim>();
+        let node_id = plugin::node();
+        let mut host_state = net.host_state.lock().unwrap();
+        let socket = host_state
+            .sockets
+            .get_mut(&(node_id, fd))
+            .ok_or_else(|| io::Error::new(io::ErrorKind::NotConnected, "no such socket"))?;
+        Ok(cb(socket))
+    }
+}
+
+/// Get the Endpoint of a bound socket.
+pub fn get_endpoint_from_socket(fd: libc::c_int) -> io::Result<Arc<Endpoint>> {
+    HostNetworkState::with_socket(fd, |socket| socket.endpoint.as_ref().map(|ep| ep.clone()))?
+        .ok_or_else(|| io::Error::new(io::ErrorKind::NotConnected, "socket has not been bound"))
+}
+
+define_bypass!(bypass_close, fn close(fd: libc::c_int) -> libc::c_int);
+
+define_sys_interceptor!(
+    fn close(fd: libc::c_int) -> libc::c_int {
+        if HostNetworkState::close_socket(fd) {
+            return 0;
+        }
+        trace!("forwarding close({}) to libc", fd);
+        NEXT_DL_SYM(fd)
+    }
+);
+
+#[cfg(target_os = "macos")]
+unsafe fn set_errno(err: libc::c_int) {
+    *libc::__error() = err;
+}
+
+#[cfg(target_os = "linux")]
+unsafe fn set_errno(err: libc::c_int) {
+    *libc::__errno_location() = err;
+}
+
+define_sys_interceptor!(
+    fn bind(
+        sock_fd: libc::c_int,
+        sock_addr: *const libc::sockaddr,
+        addr_len: libc::socklen_t,
+    ) -> libc::c_int {
+        let socket_addr = socket2::SockAddr::init(|storage, len| {
+            std::ptr::copy_nonoverlapping(
+                sock_addr as *const u8,
+                storage as *mut u8,
+                std::cmp::min(*len, addr_len) as usize,
+            );
+            Ok(())
+        })
+        .unwrap()
+        .1
+        .as_socket()
+        .unwrap();
+
+        if socket_addr.is_ipv6() {
+            warn!("ipv6 not supported in simulator");
+            set_errno(libc::EADDRNOTAVAIL);
+            return -1;
+        }
+
+        HostNetworkState::bind_socket(sock_fd, socket_addr)
+    }
+);
+
+define_sys_interceptor!(
+    fn connect(
+        socket: libc::c_int,
+        address: *const libc::sockaddr,
+        len: libc::socklen_t,
+    ) -> libc::c_int {
+        todo!();
+    }
+);
+
+define_sys_interceptor!(
+    fn socket(domain: libc::c_int, ty: libc::c_int, protocol: libc::c_int) -> libc::c_int {
+        assert!(
+            domain == libc::AF_INET || domain == libc::AF_INET6,
+            "only ip4 sockets are currently supported"
+        );
+
+        if protocol != 0 {
+            warn!("socket(): non-zero protocol ignored - application intent may not be respected");
+        }
+
+        // Allocate a new file descriptor - it will never be used. We don't want to allocate fds
+        // ourselves because the program may allocate an fd from some other means (like open())
+        // which could collide with any descriptor we choose.
+        let fd = libc::dup(0);
+
+        let socket = SocketState {
+            ty,
+            _placeholder_file: FileDes(fd),
+            endpoint: None,
+        };
+
+        HostNetworkState::add_socket(fd, socket);
+
+        fd
+    }
+);
+
+define_sys_interceptor!(
+    fn getsockname(
+        socket: libc::c_int,
+        address: *mut libc::sockaddr,
+        address_len: *mut libc::socklen_t,
+    ) -> libc::c_int {
+        trace!("getsockname({})", socket);
+        // getsockname() on an un-bound socket does not actually return an error - instead it has
+        // unspecified behavior. But we can just panic, since doing this would be a bug anyway.
+        let addr: socket2::SockAddr = HostNetworkState::get_socket_addr(socket)
+            .expect("getsockname() on un-bound socket")
+            .into();
+
+        let len = std::cmp::min(*address_len as usize, addr.len() as usize);
+
+        std::ptr::copy_nonoverlapping(addr.as_ptr() as *const u8, address as *mut u8, len);
+
+        let address_len = &mut *address_len;
+        *address_len = addr.len();
+
+        0
+    }
+);
+
+define_sys_interceptor!(
+    fn setsockopt(
+        socket: libc::c_int,
+        level: libc::c_int,
+        name: libc::c_int,
+        value: *const libc::c_void,
+        option_len: libc::socklen_t,
+    ) -> libc::c_int {
+        trace!("setsockopt({}, {}, {})", socket, level, name);
+        match (level, name) {
+            (libc::IPPROTO_IPV6, _) => unimplemented!("ipv6 not supported"),
+
+            // called by rust std::net::TcpListener::bind
+            // No need to actually emulate SO_REUSEADDR behavior (for now).
+            (libc::SOL_SOCKET, libc::SO_REUSEADDR) => 0,
+
+            // call by std::net::TcpStream::set_ttl
+            (libc::IPPROTO_IP, libc::IP_TTL) => 0,
+
+            // called by rust std::net::UdpSocket::bind
+            #[cfg(target_os = "macos")]
+            (libc::SOL_SOCKET, libc::SO_NOSIGPIPE) => 0,
+
+            // Call by quinn, no need to emulate (for now)
+            (libc::IPPROTO_IP, libc::IP_RECVTOS) => 0,
+            (libc::IPPROTO_IP, libc::IP_PKTINFO) => 0,
+
+            // The simulator never fragments or anything like that, so there is no need to simulate
+            // this option.
+            #[cfg(target_os = "linux")]
+            (libc::IPPROTO_IP, libc::IP_MTU_DISCOVER) => 0,
+
+            // simulator doesn't simulate GRO/GSO
+            #[cfg(target_os = "linux")]
+            (libc::SOL_UDP, libc::UDP_GRO) => -1,
+            #[cfg(target_os = "linux")]
+            (libc::SOL_UDP, libc::UDP_SEGMENT) => -1,
+
+            _ => {
+                warn!("unhandled socket option {} {}", level, name);
+                0
+            }
+        }
+    }
+);
+
+define_sys_interceptor!(
+    fn send(
+        sockfd: libc::c_int,
+        buf: *const libc::c_void,
+        len: libc::size_t,
+        flags: libc::c_int,
+    ) -> libc::ssize_t {
+        unimplemented!("simulator error: send() should have been handled by tokio");
+    }
+);
+
+define_sys_interceptor!(
+    fn sendto(
+        sockfd: libc::c_int,
+        buf: *const libc::c_void,
+        len: libc::size_t,
+        flags: libc::c_int,
+        dest_addr: *const libc::sockaddr,
+        addrlen: libc::socklen_t,
+    ) -> libc::ssize_t {
+        unimplemented!("simulator error: sendto() should have been handled by tokio");
+    }
+);
+
+enum UDPMessage {
+    Payload(Vec<u8>),
+}
+
+impl UDPMessage {
+    fn payload(v: Vec<u8>) -> Box<UDPMessage> {
+        Box::new(UDPMessage::Payload(v))
+    }
+
+    fn into_payload(self) -> Vec<u8> {
+        match self {
+            Self::Payload(v) => v,
+        }
+    }
+}
+
+unsafe fn msg_hdr_to_socket(msg: &libc::msghdr) -> SocketAddr {
+    socket2::SockAddr::init(|storage, len| {
+        std::ptr::copy_nonoverlapping(
+            msg.msg_name as *const u8,
+            storage as *mut u8,
+            std::cmp::min(*len, msg.msg_namelen) as usize,
+        );
+        Ok(())
+    })
+    .unwrap()
+    .1
+    .as_socket()
+    .unwrap()
+}
+
+unsafe fn send_impl(
+    socket: &mut SocketState,
+    dst_addr: &SocketAddr,
+    flags: libc::c_int,
+    iov: &libc::iovec,
+) -> libc::ssize_t {
+    assert_eq!(
+        socket.ty,
+        libc::SOCK_DGRAM,
+        "only UDP is supported in sendmsg/sendmmsg"
+    );
+
+    if flags != 0 {
+        warn!("unsupported flags to sendmsg/sendmmsg: {:x}", flags);
+    }
+
+    // TODO: we are not currently emulating control msgs, such as IP_PKTINFO -
+    // QUIC relies on this in situations where a socket is bound to 0.0.0.0 and there are multiple
+    // interfaces/ip addresses. However, simulated nodes don't have multiple IPs, so this doesn't
+    // affect us.
+    let slice = std::slice::from_raw_parts(iov.iov_base as *const u8, iov.iov_len);
+    let msg = UDPMessage::payload(slice.into());
+
+    // If we need to handle sending from unconnected sockets, we can make an ephemeral
+    // endpoint.
+    let ep = socket
+        .endpoint
+        .as_ref()
+        .expect("sendmsg on unconnected sockets not supported");
+
+    ep.send_to_raw_sync(*dst_addr, dst_addr.port().into(), msg);
+
+    slice.len() as libc::ssize_t
+}
+
+define_sys_interceptor!(
+    fn sendmsg(sockfd: libc::c_int, msg: *const libc::msghdr, flags: libc::c_int) -> libc::ssize_t {
+        HostNetworkState::with_socket(sockfd, |socket| {
+            let msg = &*msg;
+            let dst_addr = msg_hdr_to_socket(msg);
+
+            assert_eq!(msg.msg_iovlen, 1, "scatter/gather unsupported");
+
+            let iov = &*msg.msg_iov;
+
+            send_impl(socket, &dst_addr, flags, iov)
+        })
+        .unwrap_or_else(|e| {
+            trace!("error: {}", e);
+            set_errno(libc::EADDRNOTAVAIL);
+            -1
+        })
+    }
+);
+
+#[cfg(target_os = "linux")]
+define_sys_interceptor!(
+    fn sendmmsg(
+        sockfd: libc::c_int,
+        msgvec: *mut libc::mmsghdr,
+        vlen: libc::c_uint,
+        flags: libc::c_int,
+    ) -> libc::c_int {
+        HostNetworkState::with_socket(sockfd, |socket| {
+            let msgvec = &mut *msgvec;
+            let msgs = std::slice::from_raw_parts(msgvec.msg_hdr, msgvec.msg_len);
+
+            for msg in msgs {
+                let dst_addr = msg_hdr_to_socket(msg.msg_hdr);
+                assert_eq!(msg.msg_hdr.msg_iovlen, 1, "scatter/gather unsupported");
+                let iov = &*msg.msg_hdr.msg_iov;
+
+                msg.msg_len = send_impl(socket, &dst_addr, flags, iov);
+            }
+            msgs.len()
+        })
+        .unwrap_or_else(|e| {
+            trace!("socket not found: {}", e);
+            set_errno(libc::EADDRNOTAVAIL);
+            -1
+        })
+    }
+);
+
+type CResult<T> = Result<T, (T, libc::c_int)>;
+
+define_sys_interceptor!(
+    fn recvmsg(sockfd: libc::c_int, msg: *mut libc::msghdr, flags: libc::c_int) -> libc::ssize_t {
+        HostNetworkState::with_socket(sockfd, |socket| -> CResult<libc::ssize_t> {
+            assert_eq!(
+                socket.ty,
+                libc::SOCK_DGRAM,
+                "only UDP is supported in recvmsg/recvmmsg"
+            );
+
+            if flags != 0 {
+                warn!("unsupported flags to sendmsg/sendmmsg: {:x}", flags);
+            }
+
+            // i'm not exactly clear what errno should be returned if you call recvmsg() without
+            // bind(), so just assert. Working code won't trigger this.
+            let ep = socket
+                .endpoint
+                .as_ref()
+                .expect("recvmsg on un-bound socket");
+
+            let udp_tag = ep.udp_tag().expect("recvmsg on un-bound socket");
+
+            let (payload, from) =
+                ep.recv_from_raw_sync(udp_tag)
+                    .map_err(|err| match err.kind() {
+                        io::ErrorKind::WouldBlock => (-1, libc::EAGAIN),
+                        _ => todo!("unhandled error case"),
+                    })?;
+
+            let msg = &mut *msg;
+
+            if !msg.msg_name.is_null() {
+                let from: socket2::SockAddr = from.into();
+                std::ptr::copy_nonoverlapping(
+                    from.as_ptr() as *const u8,
+                    msg.msg_name as *mut u8,
+                    from.len() as usize,
+                );
+            }
+
+            let payload = payload
+                .downcast::<UDPMessage>()
+                .expect("message was not UDPMessage")
+                .into_payload();
+
+            assert_eq!(msg.msg_iovlen, 1, "scatter/gather unsupported");
+
+            let iov = &*msg.msg_iov;
+            let copy_len = std::cmp::min(iov.iov_len, payload.len());
+            if copy_len < payload.len() {
+                msg.msg_flags |= libc::MSG_TRUNC;
+            }
+            std::ptr::copy_nonoverlapping(
+                payload.as_ptr() as *const u8,
+                iov.iov_base as *mut u8,
+                copy_len,
+            );
+
+            // TODO: control message
+            Ok(copy_len as libc::ssize_t)
+        })
+        .unwrap_or_else(|e| {
+            trace!("socket not found: {}", e);
+            // could also be EBADF, probably not worth trying to emulate perfectly.
+            CResult::Err((-1, libc::ENOTSOCK))
+        })
+        .unwrap_or_else(|(ret, err)| {
+            trace!("error status: {} {}", ret, err);
+            set_errno(err);
+            ret
+        })
+    }
+);
+
+#[cfg(target_os = "linux")]
+define_sys_interceptor!(
+    fn recvmmsg(
+        sockfd: libc::c_int,
+        msgvec: *mut libc::mmsghdr,
+        vlen: libc::c_uint,
+        flags: libc::c_int,
+        timeout: *mut libc::timespec,
+    ) -> libc::c_int {
+        todo!();
+    }
+);
 
 impl plugin::Simulator for NetSim {
     fn new(rand: &GlobalRng, time: &TimeHandle, config: &crate::Config) -> Self {
@@ -74,6 +551,7 @@ impl plugin::Simulator for NetSim {
             network: Mutex::new(Network::new(rand.clone(), time.clone(), config.net.clone())),
             rand: rand.clone(),
             time: time.clone(),
+            host_state: Default::default(),
             next_port_map: Mutex::new(HashMap::new()),
         }
     }
@@ -202,6 +680,21 @@ impl Endpoint {
         })
     }
 
+    /// return the tag used to send to this endpooint, for udp connections only.
+    /// (It is the same as the udp port number).
+    /// port is 0 we panic
+    pub fn udp_tag(&self) -> io::Result<u64> {
+        let port = self.addr.port();
+        if port == 0 {
+            Err(io::Error::new(
+                io::ErrorKind::NotConnected,
+                "endpoint is not bound",
+            ))
+        } else {
+            Ok(port as u64)
+        }
+    }
+
     /// Creates a [`Endpoint`] from the given address.
     pub async fn bind(addr: impl ToSocketAddrs) -> io::Result<Self> {
         let net = plugin::simulator::<NetSim>();
@@ -315,14 +808,23 @@ impl Endpoint {
     /// It is provided for use by other simulators.
     #[cfg_attr(docsrs, doc(cfg(msim)))]
     pub async fn send_to_raw(&self, dst: SocketAddr, tag: u64, data: Payload) -> io::Result<()> {
+        self.send_to_raw_sync(dst, tag, data);
+        self.net.rand_delay().await;
+        Ok(())
+    }
+
+    /// Sends a raw message.
+    ///
+    /// NOTE: Applications should not use this function!
+    /// It is provided for use by other simulators.
+    #[cfg_attr(docsrs, doc(cfg(msim)))]
+    pub fn send_to_raw_sync(&self, dst: SocketAddr, tag: u64, data: Payload) {
         trace!("send_to_raw {} -> {}, {:x}", self.addr, dst, tag);
         self.net
             .network
             .lock()
             .unwrap()
             .send(plugin::node(), self.addr, dst, tag, data);
-        self.net.rand_delay().await;
-        Ok(())
     }
 
     /// Receives a raw message.
@@ -344,6 +846,25 @@ impl Endpoint {
         self.net.rand_delay().await;
 
         trace!("recv: {} <- {}, tag={:x}", self.addr, msg.from, msg.tag);
+        Ok((msg.data, msg.from))
+    }
+
+    /// Receive a raw message, synchronously
+    pub fn recv_from_raw_sync(&self, tag: u64) -> io::Result<(Payload, SocketAddr)> {
+        let msg = self
+            .net
+            .network
+            .lock()
+            .unwrap()
+            .recv_sync(plugin::node(), self.addr, tag)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::WouldBlock, "recv call would blck"))?;
+
+        trace!(
+            "recv sync: {} <- {}, tag={:x}",
+            self.addr,
+            msg.from,
+            msg.tag
+        );
         Ok((msg.data, msg.from))
     }
 
@@ -370,6 +891,17 @@ impl Endpoint {
             "receive a message but not from the connected address"
         );
         Ok(msg)
+    }
+
+    /// Check if there is a message waiting that can be received without blocking.
+    /// If not, schedule a wakeup using the context.
+    pub fn recv_ready(&self, cx: &mut Context<'_>, tag: u64) -> io::Result<bool> {
+        Ok(self
+            .net
+            .network
+            .lock()
+            .unwrap()
+            .recv_ready(cx, plugin::node(), self.addr, tag))
     }
 }
 

@@ -11,6 +11,7 @@ pub use std::time::Duration;
 use std::{
     future::Future,
     sync::{Arc, Mutex},
+    task::Waker,
     time::SystemTime,
 };
 
@@ -146,6 +147,11 @@ impl TimeHandle {
     ) {
         let mut timer = self.timer.lock().unwrap();
         timer.add(deadline - self.clock.base_instant(), |_| callback());
+    }
+
+    /// Schedule waker.wake() in the future.
+    pub fn wake_at(&self, deadline: Instant, waker: Waker) {
+        self.add_timer(deadline, || waker.wake());
     }
 
     // Get the elapsed time since the beginning of the test run - this should not be exposed to

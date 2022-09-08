@@ -9,6 +9,7 @@ use std::{
     net::{IpAddr, SocketAddr},
     ops::Range,
     sync::{Arc, Mutex},
+    task::{Context, Waker},
     time::Duration,
 };
 use tracing::*;
@@ -259,6 +260,26 @@ impl Network {
             .unwrap()
             .recv(tag)
     }
+
+    pub fn recv_sync(&mut self, node: NodeId, dst: SocketAddr, tag: u64) -> Option<Message> {
+        self.nodes[&node].sockets[&dst.port()]
+            .lock()
+            .unwrap()
+            .recv_sync(tag)
+    }
+
+    pub fn recv_ready(
+        &self,
+        cx: &mut Context<'_>,
+        node: NodeId,
+        dst: SocketAddr,
+        tag: u64,
+    ) -> bool {
+        self.nodes[&node].sockets[&dst.port()]
+            .lock()
+            .unwrap()
+            .recv_ready(cx, tag)
+    }
 }
 
 pub struct Message {
@@ -276,10 +297,20 @@ struct Mailbox {
     registered: Vec<(u64, oneshot::Sender<Message>)>,
     /// Messages that have not been received.
     msgs: Vec<Message>,
+
+    /// Wakers for async io waiting for packets.
+    wakers: Vec<(u64, Waker)>,
 }
 
 impl Mailbox {
     fn deliver(&mut self, msg: Message) {
+        for i in (0..self.wakers.len()).rev() {
+            if self.wakers[i].0 == msg.tag {
+                let (_, waker) = self.wakers.swap_remove(i);
+                waker.wake();
+            }
+        }
+
         let mut i = 0;
         let mut msg = Some(msg);
         while i < self.registered.len() {
@@ -300,10 +331,26 @@ impl Mailbox {
         self.msgs.push(msg.unwrap());
     }
 
-    fn recv(&mut self, tag: u64) -> oneshot::Receiver<Message> {
-        let (tx, rx) = oneshot::channel();
+    fn recv_ready(&mut self, cx: &mut Context<'_>, tag: u64) -> bool {
+        let ready = self.msgs.iter().any(|msg| tag == msg.tag);
+        if !ready {
+            self.wakers.push((tag, cx.waker().clone()));
+        }
+        ready
+    }
+
+    fn recv_sync(&mut self, tag: u64) -> Option<Message> {
         if let Some(idx) = self.msgs.iter().position(|msg| tag == msg.tag) {
             let msg = self.msgs.swap_remove(idx);
+            Some(msg)
+        } else {
+            None
+        }
+    }
+
+    fn recv(&mut self, tag: u64) -> oneshot::Receiver<Message> {
+        let (tx, rx) = oneshot::channel();
+        if let Some(msg) = self.recv_sync(tag) {
             tx.send(msg).ok().unwrap();
         } else {
             self.registered.push((tag, tx));

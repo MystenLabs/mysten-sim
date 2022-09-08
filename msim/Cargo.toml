@@ -41,6 +41,7 @@ naive-timer = "0.2"
 tokio = { git = "https://github.com/mystenmark/tokio-madsim-fork.git", rev = "8ca4c94029ac1b7c8342720820e6100e9f31a372", package = "real_tokio", features = ["full"] }
 tokio-util = { git = "https://github.com/mystenmark/tokio-madsim-fork.git", rev = "8ca4c94029ac1b7c8342720820e6100e9f31a372", features = ["full"] }
 toml = "0.5"
+socket2 = "0.4"
 
 [dev-dependencies]
 criterion = "0.3"
