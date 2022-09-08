@@ -23,27 +23,33 @@ pub(crate) fn intercepts_enabled() -> bool {
 
 /// Cache and call a library function via dlsym()
 #[macro_export]
-macro_rules! maybe_call_sysimpl {
-    ($name:ident, [ $($sig:tt)+ ], $($arg:expr),*) => {{
+macro_rules! define_sys_interceptor {
 
-        lazy_static::lazy_static! {
-            static ref NEXT_DL_SYM: unsafe extern "C" $($sig)* = unsafe {
+    (fn $name:ident ( $($param:ident : $type:ty),* $(,)? ) -> $ret:ty { $($body:tt)+ }) => {
 
-                let fn_name = stringify!($name);
-                let fn_name_c = std::ffi::CString::new(fn_name).unwrap();
+        #[no_mangle]
+        #[inline(never)]
+        unsafe extern "C" fn $name ( $($param: $type),* ) -> $ret {
+            {
+                lazy_static::lazy_static! {
+                    static ref NEXT_DL_SYM: unsafe extern "C" fn ( $($param: $type),* ) -> $ret = unsafe {
 
-                let ptr = libc::dlsym(libc::RTLD_NEXT, fn_name_c.as_ptr() as _);
-                assert!(!ptr.is_null());
-                std::mem::transmute(ptr)
-            };
+                        let fn_name = stringify!($name);
+                        let fn_name_c = std::ffi::CString::new(fn_name).unwrap();
+
+                        let ptr = libc::dlsym(libc::RTLD_NEXT, fn_name_c.as_ptr() as _);
+                        assert!(!ptr.is_null());
+                        std::mem::transmute(ptr)
+                    };
+                }
+
+                if !crate::sim::intercept::intercepts_enabled() {
+                    return NEXT_DL_SYM($($param),*);
+                }
+            }
+
+            $($body)*
+
         }
-
-        if !crate::sim::intercept::intercepts_enabled() {
-            return NEXT_DL_SYM($($arg,)*);
-        }
-    }};
-
-    ($name:ident, [ $($sig:tt)+ ]) => {
-        maybe_call_sysimpl!($name, [ $($sig)* ],)
     }
 }

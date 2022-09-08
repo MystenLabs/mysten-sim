@@ -2,7 +2,7 @@
 //!
 //!
 
-use crate::maybe_call_sysimpl;
+use crate::define_sys_interceptor;
 use crate::rand::{GlobalRng, Rng};
 use futures::{select_biased, FutureExt};
 use naive_timer::Timer;
@@ -239,83 +239,71 @@ pub(crate) fn ensure_clocks() {
 }
 
 #[cfg(target_os = "macos")]
-#[no_mangle]
-#[inline(never)]
-unsafe extern "C" fn mach_absolute_time() -> u64 {
-    maybe_call_sysimpl!(mach_absolute_time, [fn() -> u64]);
+define_sys_interceptor!(
+    fn mach_absolute_time() -> u64 {
+        #[repr(C)]
+        #[derive(Copy, Clone)]
+        struct MachTimebaseInfo {
+            numer: u32,
+            denom: u32,
+        }
+        type MachTimebaseInfoT = *mut MachTimebaseInfo;
 
-    #[repr(C)]
-    #[derive(Copy, Clone)]
-    struct MachTimebaseInfo {
-        numer: u32,
-        denom: u32,
+        lazy_static::lazy_static! {
+            static ref MACH_TIME_BASE_INFO: MachTimebaseInfo = {
+                extern "C" {
+                    fn mach_timebase_info(info: MachTimebaseInfoT) -> libc::c_int;
+                }
+
+                let mut info = MachTimebaseInfo { numer: 0, denom: 0 };
+                unsafe {
+                    mach_timebase_info(&mut info as MachTimebaseInfoT);
+                }
+                assert_ne!(info.numer, 0);
+                assert_ne!(info.denom, 0);
+                info
+            };
+        }
+
+        fn mul_div_u64(value: u64, numer: u64, denom: u64) -> u64 {
+            let q = value / denom;
+            let r = value % denom;
+            // Decompose value as (value/denom*denom + value%denom),
+            // substitute into (value*numer)/denom and simplify.
+            // r < denom, so (denom*numer) is the upper bound of (r*numer)
+            q * numer + r * numer / denom
+        }
+
+        let elapsed = TimeHandle::current().elapsed();
+        let nanos = elapsed.as_nanos().try_into().unwrap();
+
+        // convert nanos back to mach_absolute_time units
+        mul_div_u64(
+            nanos,
+            MACH_TIME_BASE_INFO.denom as u64,
+            MACH_TIME_BASE_INFO.numer as u64,
+        )
     }
-    type MachTimebaseInfoT = *mut MachTimebaseInfo;
-
-    lazy_static::lazy_static! {
-        static ref MACH_TIME_BASE_INFO: MachTimebaseInfo = {
-            extern "C" {
-                fn mach_timebase_info(info: MachTimebaseInfoT) -> libc::c_int;
-            }
-
-            let mut info = MachTimebaseInfo { numer: 0, denom: 0 };
-            unsafe {
-                mach_timebase_info(&mut info as MachTimebaseInfoT);
-            }
-            assert_ne!(info.numer, 0);
-            assert_ne!(info.denom, 0);
-            info
-        };
-    }
-
-    fn mul_div_u64(value: u64, numer: u64, denom: u64) -> u64 {
-        let q = value / denom;
-        let r = value % denom;
-        // Decompose value as (value/denom*denom + value%denom),
-        // substitute into (value*numer)/denom and simplify.
-        // r < denom, so (denom*numer) is the upper bound of (r*numer)
-        q * numer + r * numer / denom
-    }
-
-    let elapsed = TimeHandle::current().elapsed();
-    let nanos = elapsed.as_nanos().try_into().unwrap();
-
-    // convert nanos back to mach_absolute_time units
-    mul_div_u64(
-        nanos,
-        MACH_TIME_BASE_INFO.denom as u64,
-        MACH_TIME_BASE_INFO.numer as u64,
-    )
-}
+);
 
 #[cfg(target_os = "linux")]
-#[no_mangle]
-#[inline(never)]
-unsafe extern "C" fn clock_gettime(
-    clock_id: libc::clockid_t,
-    ts: *mut libc::timespec,
-) -> libc::c_int {
-    maybe_call_sysimpl!(
-        clock_gettime,
-        [fn(clock_id: libc::clockid_t, tp: *mut libc::timespec) -> libc::c_int],
-        clock_id,
-        ts
-    );
+define_sys_interceptor!(
+    fn clock_gettime(clock_id: libc::clockid_t, ts: *mut libc::timespec) -> libc::c_int {
+        let elapsed = TimeHandle::current().elapsed();
+        let nanos: u64 = elapsed.as_nanos().try_into().unwrap();
 
-    let elapsed = TimeHandle::current().elapsed();
-    let nanos: u64 = elapsed.as_nanos().try_into().unwrap();
+        const NANOS_PER_SEC: u64 = 1_000_000_000;
+        let seconds = nanos / NANOS_PER_SEC;
+        let nanos = nanos - (seconds * NANOS_PER_SEC);
 
-    const NANOS_PER_SEC: u64 = 1_000_000_000;
-    let seconds = nanos / NANOS_PER_SEC;
-    let nanos = nanos - (seconds * NANOS_PER_SEC);
+        let ts = &mut *ts;
 
-    let ts = &mut *ts;
+        ts.tv_sec = seconds.try_into().unwrap();
+        ts.tv_nsec = nanos.try_into().unwrap();
 
-    ts.tv_sec = seconds.try_into().unwrap();
-    ts.tv_nsec = nanos.try_into().unwrap();
-
-    0
-}
+        0
+    }
+);
 
 #[cfg(test)]
 mod tests {
