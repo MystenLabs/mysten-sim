@@ -65,6 +65,7 @@ impl Runtime {
         let rt = Runtime { rand, task, handle };
         rt.add_simulator::<fs::FsSim>();
         rt.add_simulator::<net::NetSim>();
+        intercept::enable_intercepts(true);
         rt
     }
 
@@ -124,6 +125,7 @@ impl Runtime {
     /// ```
     pub fn block_on<F: Future>(&self, future: F) -> F::Output {
         let _guard = crate::context::enter(self.handle.clone());
+        crate::time::ensure_clocks();
         self.task.block_on(future)
     }
 
