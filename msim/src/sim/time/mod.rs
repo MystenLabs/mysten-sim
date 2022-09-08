@@ -2,6 +2,7 @@
 //!
 //!
 
+use crate::define_sys_interceptor;
 use crate::rand::{GlobalRng, Rng};
 use futures::{select_biased, FutureExt};
 use naive_timer::Timer;
@@ -220,6 +221,90 @@ impl ClockHandle {
     }
 }
 
+// ensure that clock functions are not elided by optimizer
+pub(crate) fn ensure_clocks() {
+    unsafe {
+        #[cfg(target_os = "macos")]
+        mach_absolute_time();
+
+        #[cfg(target_os = "linux")]
+        {
+            let mut ts = libc::timespec {
+                tv_sec: 0,
+                tv_nsec: 0,
+            };
+            clock_gettime(libc::CLOCK_MONOTONIC, &mut ts as *mut libc::timespec);
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+define_sys_interceptor!(
+    fn mach_absolute_time() -> u64 {
+        #[repr(C)]
+        #[derive(Copy, Clone)]
+        struct MachTimebaseInfo {
+            numer: u32,
+            denom: u32,
+        }
+        type MachTimebaseInfoT = *mut MachTimebaseInfo;
+
+        lazy_static::lazy_static! {
+            static ref MACH_TIME_BASE_INFO: MachTimebaseInfo = {
+                extern "C" {
+                    fn mach_timebase_info(info: MachTimebaseInfoT) -> libc::c_int;
+                }
+
+                let mut info = MachTimebaseInfo { numer: 0, denom: 0 };
+                unsafe {
+                    mach_timebase_info(&mut info as MachTimebaseInfoT);
+                }
+                assert_ne!(info.numer, 0);
+                assert_ne!(info.denom, 0);
+                info
+            };
+        }
+
+        fn mul_div_u64(value: u64, numer: u64, denom: u64) -> u64 {
+            let q = value / denom;
+            let r = value % denom;
+            // Decompose value as (value/denom*denom + value%denom),
+            // substitute into (value*numer)/denom and simplify.
+            // r < denom, so (denom*numer) is the upper bound of (r*numer)
+            q * numer + r * numer / denom
+        }
+
+        let elapsed = TimeHandle::current().elapsed();
+        let nanos = elapsed.as_nanos().try_into().unwrap();
+
+        // convert nanos back to mach_absolute_time units
+        mul_div_u64(
+            nanos,
+            MACH_TIME_BASE_INFO.denom as u64,
+            MACH_TIME_BASE_INFO.numer as u64,
+        )
+    }
+);
+
+#[cfg(target_os = "linux")]
+define_sys_interceptor!(
+    fn clock_gettime(clock_id: libc::clockid_t, ts: *mut libc::timespec) -> libc::c_int {
+        let elapsed = TimeHandle::current().elapsed();
+        let nanos: u64 = elapsed.as_nanos().try_into().unwrap();
+
+        const NANOS_PER_SEC: u64 = 1_000_000_000;
+        let seconds = nanos / NANOS_PER_SEC;
+        let nanos = nanos - (seconds * NANOS_PER_SEC);
+
+        let ts = &mut *ts;
+
+        ts.tv_sec = seconds.try_into().unwrap();
+        ts.tv_nsec = nanos.try_into().unwrap();
+
+        0
+    }
+);
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -230,6 +315,13 @@ mod tests {
         let runtime = Runtime::new();
         runtime.block_on(async {
             let t0 = Instant::now();
+            let std_t0 = std::time::Instant::now();
+
+            // Verify that times in other threads are not intercepted.
+            let std_t1 = std::thread::spawn(|| std::time::Instant::now())
+                .join()
+                .unwrap();
+            assert_ne!(std_t0, std_t1);
 
             sleep(Duration::from_secs(1)).await;
             assert!(t0.elapsed() >= Duration::from_secs(1));
@@ -237,6 +329,10 @@ mod tests {
             sleep_until(t0 + Duration::from_secs(2)).await;
             assert!(t0.elapsed() >= Duration::from_secs(2));
 
+            sleep(Duration::from_secs(20)).await;
+
+            // make sure system clock has been intercepted.
+            assert_eq!(std_t0.elapsed(), t0.elapsed());
             assert!(
                 timeout(Duration::from_secs(2), sleep(Duration::from_secs(1)))
                     .await
