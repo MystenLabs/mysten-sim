@@ -22,7 +22,7 @@ use std::{
     time::Duration,
 };
 
-use tracing::{trace_span, Span};
+use tracing::{trace, trace_span, Span};
 
 pub use tokio::msim_adapter::{join_error, runtime_task};
 pub use tokio::task::{yield_now, JoinError};
@@ -164,12 +164,26 @@ impl Executor {
             }
             // run task
             let _guard = crate::context::enter_task(info);
+            let panic_guard = PanicGuard(self);
             runnable.run();
+
+            // panic guard only runs if runnable.run() panics - in that case
+            // we must drop all tasks before exiting the task, since they may have Drop impls that
+            // assume access to the current task/runtime.
+            std::mem::forget(panic_guard);
 
             // advance time: 50-100ns
             let dur = Duration::from_nanos(self.rand.with(|rng| rng.gen_range(50..100)));
             self.time.advance(dur);
         }
+    }
+}
+
+struct PanicGuard<'a>(&'a Executor);
+impl<'a> Drop for PanicGuard<'a> {
+    fn drop(&mut self) {
+        trace!("panic detected - dropping all tasks immediately");
+        self.0.queue.clear_inner();
     }
 }
 
