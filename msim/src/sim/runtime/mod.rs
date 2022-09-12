@@ -178,8 +178,8 @@ impl Runtime {
     /// ```
     pub fn enable_determinism_check(&self, log: Option<rand::Log>) {
         assert_eq!(
-            self.task.time_handle().elapsed(),
-            Duration::default(),
+            self.task.time_handle().time_since_clock_base(),
+            Duration::from_secs(0),
             "deterministic check must be set at init"
         );
         if let Some(log) = log {

@@ -147,6 +147,12 @@ impl TimeHandle {
         let mut timer = self.timer.lock().unwrap();
         timer.add(deadline - self.clock.base_instant(), |_| callback());
     }
+
+    // Get the elapsed time since the beginning of the test run - this should not be exposed to
+    // test code.
+    pub(crate) fn time_since_clock_base(&self) -> Duration {
+        self.clock.time_since_clock_base()
+    }
 }
 
 /// Supply tokio::time::advance() API (for compilation only - this method
@@ -175,34 +181,44 @@ struct Clock {
     base_time: std::time::SystemTime,
     base_instant: Instant,
     /// The amount of mock time which has elapsed.
-    advance: Duration,
+    elapsed_time: Duration,
 }
 
 impl ClockHandle {
+    const CLOCK_BASE: Duration = Duration::from_secs(86400);
+
     fn new(base_time: SystemTime) -> Self {
+        let base_instant: Instant = unsafe { std::mem::zeroed() };
         let clock = Clock {
             base_time,
-            base_instant: unsafe { std::mem::zeroed() },
-            advance: Duration::default(),
+            base_instant,
+            // Some code subtracts constant durations from Instant::now(), which underflows if the base
+            // instant is too small. That code is incorrect but we'll just make life easy anyway by
+            // starting the clock with one day of elapsed time.
+            elapsed_time: Self::CLOCK_BASE,
         };
         ClockHandle {
             inner: Arc::new(Mutex::new(clock)),
         }
     }
 
+    fn time_since_clock_base(&self) -> Duration {
+        self.elapsed() - Self::CLOCK_BASE
+    }
+
     fn set_elapsed(&self, time: Duration) {
         let mut inner = self.inner.lock().unwrap();
-        inner.advance = time;
+        inner.elapsed_time = time;
     }
 
     fn elapsed(&self) -> Duration {
         let inner = self.inner.lock().unwrap();
-        inner.advance
+        inner.elapsed_time
     }
 
     fn advance(&self, duration: Duration) {
         let mut inner = self.inner.lock().unwrap();
-        inner.advance += duration;
+        inner.elapsed_time += duration;
     }
 
     fn base_instant(&self) -> Instant {
@@ -212,12 +228,12 @@ impl ClockHandle {
 
     fn now_instant(&self) -> Instant {
         let inner = self.inner.lock().unwrap();
-        inner.base_instant + inner.advance
+        inner.base_instant + inner.elapsed_time
     }
 
     fn now_time(&self) -> SystemTime {
         let inner = self.inner.lock().unwrap();
-        inner.base_time + inner.advance
+        inner.base_time + inner.elapsed_time
     }
 }
 
