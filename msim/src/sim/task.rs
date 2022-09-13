@@ -154,7 +154,10 @@ impl Executor {
     fn run_all_ready(&self) {
         while let Ok((runnable, info)) = self.queue.try_recv_random(&self.rand) {
             if info.killed.load(Ordering::SeqCst) {
-                // killed task: ignore
+                // killed task: must enter the task before dropping it, so that
+                // Drop impls can run.
+                let _guard = crate::context::enter_task(info);
+                std::mem::drop(runnable);
                 continue;
             } else if info.paused.load(Ordering::SeqCst) {
                 // paused task: push to waiting list
