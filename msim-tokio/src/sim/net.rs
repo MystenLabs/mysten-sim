@@ -87,27 +87,27 @@ impl TcpListener {
     async fn poll_accept_internal(ep: Arc<Endpoint>) -> io::Result<(TcpStream, SocketAddr)> {
         let (msg, from) = ep.recv_from_raw(0).await?;
 
-        let remote_port = Message::new(msg).unwrap_port();
+        let remote_tcp_id = Message::new(msg).unwrap_tcp_id();
         trace!(
-            "server: read remote port from client {} {}",
+            "server: read remote tcp id from client {} {}",
             from,
-            remote_port
+            remote_tcp_id
         );
 
-        let local_port: u32 = ep.allocate_local_port();
+        let local_tcp_id: u32 = ep.allocate_local_tcp_id();
 
-        let state = TcpState::new(ep, local_port, remote_port, from);
+        let state = TcpState::new(ep, local_tcp_id, remote_tcp_id, from);
 
-        // tell other side what our port is
+        // tell other side what our tcp id is
         trace!(
-            "server: sending local_port {} to client {}-{}",
-            local_port,
+            "server: sending local_tcp_id {} to client {}-{}",
+            local_tcp_id,
             from,
-            remote_port
+            remote_tcp_id
         );
         state
             .ep
-            .send_to_raw(from, state.next_send_tag(), Message::port(local_port))
+            .send_to_raw(from, state.next_send_tag(), Message::tcp_id(local_tcp_id))
             .await?;
 
         let stream = TcpStream::new(state);
@@ -194,7 +194,7 @@ impl Buffer {
 }
 
 enum Message {
-    Port(u32),
+    TcpId(u32),
     // sequence number + payload - the simulator is unordered.
     // sequence number is unnecessary, but we use it for a debug assert to make sure we haven't
     // screwed up the sequencing.
@@ -206,8 +206,8 @@ impl Message {
         *payload.downcast::<Message>().unwrap()
     }
 
-    fn port(p: u32) -> Box<Message> {
-        Box::new(Message::Port(p))
+    fn tcp_id(p: u32) -> Box<Message> {
+        Box::new(Message::TcpId(p))
     }
 
     fn payload(s: u32, v: Vec<u8>) -> Box<Message> {
@@ -221,10 +221,10 @@ impl Message {
         }
     }
 
-    fn unwrap_port(self) -> u32 {
+    fn unwrap_tcp_id(self) -> u32 {
         match self {
-            Message::Port(p) => p,
-            _ => panic!("expected port"),
+            Message::TcpId(p) => p,
+            _ => panic!("expected TcpId"),
         }
     }
 }
@@ -234,8 +234,8 @@ struct TcpState {
     ep: Arc<Endpoint>,
     send_seq: AtomicU32,
     recv_seq: AtomicU32,
-    local_port: u32,
-    remote_port: u32,
+    local_tcp_id: u32,
+    remote_tcp_id: u32,
     remote_sock: SocketAddr,
 
     // not simulated, only present to return the correct value with getters/settters.
@@ -243,13 +243,18 @@ struct TcpState {
 }
 
 impl TcpState {
-    fn new(ep: Arc<Endpoint>, local_port: u32, remote_port: u32, remote_sock: SocketAddr) -> Self {
+    fn new(
+        ep: Arc<Endpoint>,
+        local_tcp_id: u32,
+        remote_tcp_id: u32,
+        remote_sock: SocketAddr,
+    ) -> Self {
         Self {
             ep,
             send_seq: AtomicU32::new(0),
             recv_seq: AtomicU32::new(0),
-            local_port,
-            remote_port,
+            local_tcp_id,
+            remote_tcp_id,
             remote_sock,
             nodelay: AtomicBool::new(false),
         }
@@ -257,14 +262,14 @@ impl TcpState {
 
     fn next_send_tag(&self) -> u64 {
         let seq = self.send_seq.fetch_add(1, Ordering::SeqCst) as u64;
-        let port = self.remote_port as u64;
-        (port << 32) | seq
+        let tcp_id = self.remote_tcp_id as u64;
+        (tcp_id << 32) | seq
     }
 
     fn next_recv_tag(&self) -> u64 {
         let seq = self.recv_seq.fetch_add(1, Ordering::SeqCst) as u64;
-        let port = self.local_port as u64;
-        (port << 32) | seq
+        let tcp_id = self.local_tcp_id as u64;
+        (tcp_id << 32) | seq
     }
 }
 
@@ -307,31 +312,35 @@ impl TcpStream {
         trace!("connect {:?}", ep.local_addr());
 
         let remote_sock = ep.peer_addr()?;
-        let local_port = ep.allocate_local_port();
+        let local_tcp_id = ep.allocate_local_tcp_id();
 
         // partially initialized state
-        let mut state = TcpState::new(ep, local_port, 0xdeadbeef, remote_sock);
+        let mut state = TcpState::new(ep, local_tcp_id, 0xdeadbeef, remote_sock);
 
-        // establish new connection, use reserved tag 0 to tell other side the local port.
-        trace!("sending server {} localport {}", remote_sock, local_port);
+        // establish new connection, use reserved tag 0 to tell other side the local tcp_id.
+        trace!(
+            "sending server {} local tcp_id {}",
+            remote_sock,
+            local_tcp_id
+        );
         state
             .ep
-            .send_to_raw(remote_sock, 0, Message::port(state.local_port))
+            .send_to_raw(remote_sock, 0, Message::tcp_id(state.local_tcp_id))
             .await?;
 
-        // read the remote port back
+        // read the remote tcp_id back
         trace!(
-            "awaiting remote port from server {} {}",
+            "awaiting remote tcp_id from server {} {}",
             remote_sock,
-            local_port
+            local_tcp_id
         );
 
         let (msg, from) = state.ep.recv_from_raw(state.next_recv_tag()).await?;
         debug_assert_eq!(from, remote_sock);
         // finish initializing state
-        state.remote_port = Message::new(msg).unwrap_port();
+        state.remote_tcp_id = Message::new(msg).unwrap_tcp_id();
         trace!(
-            "received remote port from server {} <- {}",
+            "received remote tcp_id from server {} <- {}",
             state.remote_sock,
             from
         );

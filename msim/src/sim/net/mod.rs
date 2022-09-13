@@ -67,7 +67,7 @@ pub struct NetSim {
     host_state: Mutex<HostNetworkState>,
     rand: GlobalRng,
     time: TimeHandle,
-    next_port_map: Mutex<HashMap<NodeId, u32>>,
+    next_tcp_id_map: Mutex<HashMap<NodeId, u32>>,
 }
 
 #[derive(Debug)]
@@ -552,7 +552,7 @@ impl plugin::Simulator for NetSim {
             rand: rand.clone(),
             time: time.clone(),
             host_state: Default::default(),
-            next_port_map: Mutex::new(HashMap::new()),
+            next_tcp_id_map: Mutex::new(HashMap::new()),
         }
     }
 
@@ -630,8 +630,8 @@ impl NetSim {
     }
 
     /// Get the next unused port number for this node.
-    pub fn next_local_port(&self, node: NodeId) -> u32 {
-        let mut map = self.next_port_map.lock().unwrap();
+    pub fn next_tcp_id(&self, node: NodeId) -> u32 {
+        let mut map = self.next_tcp_id_map.lock().unwrap();
         match map.entry(node) {
             Entry::Occupied(mut cur) => {
                 let cur = cur.get_mut();
@@ -639,7 +639,7 @@ impl NetSim {
                 *cur
             }
             Entry::Vacant(e) => {
-                // ports start at 1, 0 is used for new connections (see poll_accept_internal)
+                // tcp ids start at 1, 0 is used for new connections (see poll_accept_internal)
                 e.insert(1);
                 1
             }
@@ -730,9 +730,9 @@ impl Endpoint {
         })
     }
 
-    /// Allocate a new "port" number for this node. Ports are never reused.
-    pub fn allocate_local_port(&self) -> u32 {
-        self.net.next_local_port(self.node)
+    /// Allocate a new tcp id number for this node. Ids are never reused.
+    pub fn allocate_local_tcp_id(&self) -> u32 {
+        self.net.next_tcp_id(self.node)
     }
 
     /// Returns the local socket address.
