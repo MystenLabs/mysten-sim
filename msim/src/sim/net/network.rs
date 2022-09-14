@@ -1,9 +1,9 @@
-use crate::{rand::*, task::NodeId, time::TimeHandle};
+use crate::{plugin, rand::*, task::NodeId, time::TimeHandle};
 use futures::channel::oneshot;
 use serde::{Deserialize, Serialize};
 use std::{
     any::Any,
-    collections::{hash_map::Entry, HashMap, HashSet},
+    collections::{hash_map::Entry, HashMap, HashSet, VecDeque},
     hash::{Hash, Hasher},
     io,
     net::{IpAddr, SocketAddr},
@@ -93,6 +93,14 @@ impl Network {
         }
     }
 
+    fn get_node_for_addr(&self, ip: &IpAddr) -> Option<NodeId> {
+        if ip.is_loopback() {
+            Some(plugin::node())
+        } else {
+            self.addr_to_node.get(ip).cloned()
+        }
+    }
+
     pub fn update_config(&mut self, f: impl FnOnce(&mut Config)) {
         f(&mut self.config);
     }
@@ -157,9 +165,9 @@ impl Network {
         self.clogged_link.remove(&(src, dst));
     }
 
-    pub fn bind(&mut self, node: NodeId, mut addr: SocketAddr) -> io::Result<SocketAddr> {
-        debug!("bind: {addr} -> {node}");
-        let node = self.nodes.get_mut(&node).expect("node not found");
+    pub fn bind(&mut self, node_id: NodeId, mut addr: SocketAddr) -> io::Result<SocketAddr> {
+        debug!("binding: {addr} -> {node_id}");
+        let node = self.nodes.get_mut(&node_id).expect("node not found");
         // resolve IP if unspecified
         if addr.ip().is_unspecified() {
             if let Some(ip) = node.ip {
@@ -176,7 +184,7 @@ impl Network {
         }
         // resolve port if unspecified
         if addr.port() == 0 {
-            let port = (1..=u16::MAX)
+            let port = (32768..=u16::MAX)
                 .find(|port| !node.sockets.contains_key(port))
                 .ok_or_else(|| {
                     io::Error::new(io::ErrorKind::AddrInUse, "no available ephemeral port")
@@ -184,6 +192,7 @@ impl Network {
             addr.set_port(port);
         }
         // insert socket
+        debug!("bound: {addr} -> {node_id}");
         match node.sockets.entry(addr.port()) {
             Entry::Occupied(_) => {
                 return Err(io::Error::new(
@@ -198,9 +207,32 @@ impl Network {
         Ok(addr)
     }
 
+    pub fn signal_connect(&self, src: SocketAddr, dst: SocketAddr) -> bool {
+        let node = self.get_node_for_addr(&dst.ip());
+        if node.is_none() {
+            return false;
+        }
+        let node = node.unwrap();
+
+        let dst_socket = self.nodes[&node].sockets.get(&dst.port());
+
+        if let Some(dst_socket) = dst_socket {
+            dst_socket.lock().unwrap().signal_connect(src);
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn accept_connect(&self, node: NodeId, listening: SocketAddr) -> Option<SocketAddr> {
+        let socket = self.nodes[&node].sockets.get(&listening.port()).unwrap();
+        socket.lock().unwrap().accept_connect()
+    }
+
     pub fn close(&mut self, node: NodeId, addr: SocketAddr) {
         debug!("close: {node} {addr}");
         let node = self.nodes.get_mut(&node).expect("node not found");
+        // TODO: simulate TIME_WAIT?
         node.sockets.remove(&addr.port());
     }
 
@@ -300,6 +332,10 @@ struct Mailbox {
 
     /// Wakers for async io waiting for packets.
     wakers: Vec<(u64, Waker)>,
+
+    /// tcp connections (via connect/accept) are signaled synchronously, out of band from the
+    /// normal network simulation, in order to support blocking connect/accept.
+    sync_connections: VecDeque<SocketAddr>,
 }
 
 impl Mailbox {
@@ -356,5 +392,13 @@ impl Mailbox {
             self.registered.push((tag, tx));
         }
         rx
+    }
+
+    fn signal_connect(&mut self, src_addr: SocketAddr) {
+        self.sync_connections.push_back(src_addr);
+    }
+
+    fn accept_connect(&mut self) -> Option<SocketAddr> {
+        self.sync_connections.pop_front()
     }
 }
