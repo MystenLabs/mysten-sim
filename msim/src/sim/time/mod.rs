@@ -262,6 +262,27 @@ pub(crate) fn ensure_clocks() {
 
 #[cfg(target_os = "macos")]
 define_sys_interceptor!(
+    fn gettimeofday(tp: *mut libc::timeval, tz: *mut libc::timezone) -> libc::c_int {
+        // NOTE: tz should be NULL.
+        // macOS: timezone is no longer used; this information is kept outside the kernel.
+        if tp.is_null() {
+            return 0;
+        }
+        let time = TimeHandle::current();
+        let dur = time
+            .now_time()
+            .duration_since(std::time::SystemTime::UNIX_EPOCH)
+            .unwrap();
+        tp.write(libc::timeval {
+            tv_sec: dur.as_secs() as _,
+            tv_usec: dur.subsec_micros() as _,
+        });
+        0
+    }
+);
+
+#[cfg(target_os = "macos")]
+define_sys_interceptor!(
     fn mach_absolute_time() -> u64 {
         #[repr(C)]
         #[derive(Copy, Clone)]
@@ -311,18 +332,27 @@ define_sys_interceptor!(
 #[cfg(target_os = "linux")]
 define_sys_interceptor!(
     fn clock_gettime(clock_id: libc::clockid_t, ts: *mut libc::timespec) -> libc::c_int {
-        let elapsed = TimeHandle::current().elapsed();
-        let nanos: u64 = elapsed.as_nanos().try_into().unwrap();
+        let time = TimeHandle::current();
+        match clock_id {
+            // used by SystemTime
+            libc::CLOCK_REALTIME | libc::CLOCK_REALTIME_COARSE => {
+                let dur = time
+                    .now_time()
+                    .duration_since(std::time::SystemTime::UNIX_EPOCH)
+                    .unwrap();
+                ts.write(libc::timespec {
+                    tv_sec: dur.as_secs() as _,
+                    tv_nsec: dur.subsec_nanos() as _,
+                });
+            }
+            // used by Instant
+            libc::CLOCK_MONOTONIC | libc::CLOCK_MONOTONIC_RAW | libc::CLOCK_MONOTONIC_COARSE => {
+                // Instant is the same layout as timespec on linux
+                ts.write(std::mem::transmute(time.now_instant()));
+            }
 
-        const NANOS_PER_SEC: u64 = 1_000_000_000;
-        let seconds = nanos / NANOS_PER_SEC;
-        let nanos = nanos - (seconds * NANOS_PER_SEC);
-
-        let ts = &mut *ts;
-
-        ts.tv_sec = seconds.try_into().unwrap();
-        ts.tv_nsec = nanos.try_into().unwrap();
-
+            _ => panic!("unsupported clockid: {}", clock_id),
+        }
         0
     }
 );
@@ -365,6 +395,17 @@ mod tests {
                     .await
                     .is_err()
             );
+        });
+    }
+
+    #[test]
+    fn system_clock() {
+        let runtime = Runtime::new();
+        runtime.block_on(async {
+            let t0 = Instant::now();
+            let s0 = SystemTime::now();
+
+            println!("{:?} {:?}", t0, s0);
         });
     }
 }
