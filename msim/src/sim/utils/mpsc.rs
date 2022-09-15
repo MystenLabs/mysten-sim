@@ -83,4 +83,13 @@ impl<T> Receiver<T> {
             Err(TryRecvError::Empty)
         }
     }
+
+    pub fn clear_inner(&self) {
+        let mut old = Vec::new();
+        {
+            let mut queue = self.inner.queue.lock().unwrap();
+            std::mem::swap(&mut old, &mut queue);
+        }
+        // must release lock before dropping queue.
+    }
 }

@@ -10,6 +10,7 @@ pub use msim_macros::{main, sim_test, test};
 pub mod collections;
 mod config;
 pub mod fs;
+mod intercept;
 pub mod net;
 #[cfg_attr(docsrs, doc(cfg(msim)))]
 pub mod plugin;

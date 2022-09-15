@@ -22,7 +22,7 @@ use std::{
     time::Duration,
 };
 
-use tracing::{trace_span, Span};
+use tracing::{trace, trace_span, Span};
 
 pub use tokio::msim_adapter::{join_error, runtime_task};
 pub use tokio::task::{yield_now, JoinError};
@@ -154,7 +154,10 @@ impl Executor {
     fn run_all_ready(&self) {
         while let Ok((runnable, info)) = self.queue.try_recv_random(&self.rand) {
             if info.killed.load(Ordering::SeqCst) {
-                // killed task: ignore
+                // killed task: must enter the task before dropping it, so that
+                // Drop impls can run.
+                let _guard = crate::context::enter_task(info);
+                std::mem::drop(runnable);
                 continue;
             } else if info.paused.load(Ordering::SeqCst) {
                 // paused task: push to waiting list
@@ -164,12 +167,26 @@ impl Executor {
             }
             // run task
             let _guard = crate::context::enter_task(info);
+            let panic_guard = PanicGuard(self);
             runnable.run();
+
+            // panic guard only runs if runnable.run() panics - in that case
+            // we must drop all tasks before exiting the task, since they may have Drop impls that
+            // assume access to the current task/runtime.
+            std::mem::forget(panic_guard);
 
             // advance time: 50-100ns
             let dur = Duration::from_nanos(self.rand.with(|rng| rng.gen_range(50..100)));
             self.time.advance(dur);
         }
+    }
+}
+
+struct PanicGuard<'a>(&'a Executor);
+impl<'a> Drop for PanicGuard<'a> {
+    fn drop(&mut self) {
+        trace!("panic detected - dropping all tasks immediately");
+        self.0.queue.clear_inner();
     }
 }
 

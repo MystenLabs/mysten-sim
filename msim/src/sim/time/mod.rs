@@ -3,6 +3,7 @@
 //!
 
 use crate::rand::{GlobalRng, Rng};
+use crate::{define_bypass, define_sys_interceptor};
 use futures::{select_biased, FutureExt};
 use naive_timer::Timer;
 #[doc(no_inline)]
@@ -10,8 +11,11 @@ pub use std::time::Duration;
 use std::{
     future::Future,
     sync::{Arc, Mutex},
+    task::Waker,
     time::SystemTime,
 };
+
+use tracing::trace;
 
 pub mod error;
 mod instant;
@@ -146,6 +150,17 @@ impl TimeHandle {
         let mut timer = self.timer.lock().unwrap();
         timer.add(deadline - self.clock.base_instant(), |_| callback());
     }
+
+    /// Schedule waker.wake() in the future.
+    pub fn wake_at(&self, deadline: Instant, waker: Waker) {
+        self.add_timer(deadline, || waker.wake());
+    }
+
+    // Get the elapsed time since the beginning of the test run - this should not be exposed to
+    // test code.
+    pub(crate) fn time_since_clock_base(&self) -> Duration {
+        self.clock.time_since_clock_base()
+    }
 }
 
 /// Supply tokio::time::advance() API (for compilation only - this method
@@ -174,34 +189,44 @@ struct Clock {
     base_time: std::time::SystemTime,
     base_instant: Instant,
     /// The amount of mock time which has elapsed.
-    advance: Duration,
+    elapsed_time: Duration,
 }
 
 impl ClockHandle {
+    const CLOCK_BASE: Duration = Duration::from_secs(86400);
+
     fn new(base_time: SystemTime) -> Self {
+        let base_instant: Instant = unsafe { std::mem::zeroed() };
         let clock = Clock {
             base_time,
-            base_instant: unsafe { std::mem::zeroed() },
-            advance: Duration::default(),
+            base_instant,
+            // Some code subtracts constant durations from Instant::now(), which underflows if the base
+            // instant is too small. That code is incorrect but we'll just make life easy anyway by
+            // starting the clock with one day of elapsed time.
+            elapsed_time: Self::CLOCK_BASE,
         };
         ClockHandle {
             inner: Arc::new(Mutex::new(clock)),
         }
     }
 
+    fn time_since_clock_base(&self) -> Duration {
+        self.elapsed() - Self::CLOCK_BASE
+    }
+
     fn set_elapsed(&self, time: Duration) {
         let mut inner = self.inner.lock().unwrap();
-        inner.advance = time;
+        inner.elapsed_time = time;
     }
 
     fn elapsed(&self) -> Duration {
         let inner = self.inner.lock().unwrap();
-        inner.advance
+        inner.elapsed_time
     }
 
     fn advance(&self, duration: Duration) {
         let mut inner = self.inner.lock().unwrap();
-        inner.advance += duration;
+        inner.elapsed_time += duration;
     }
 
     fn base_instant(&self) -> Instant {
@@ -211,14 +236,169 @@ impl ClockHandle {
 
     fn now_instant(&self) -> Instant {
         let inner = self.inner.lock().unwrap();
-        inner.base_instant + inner.advance
+        inner.base_instant + inner.elapsed_time
     }
 
     fn now_time(&self) -> SystemTime {
         let inner = self.inner.lock().unwrap();
-        inner.base_time + inner.advance
+        inner.base_time + inner.elapsed_time
     }
 }
+
+// ensure that clock functions are not elided by optimizer
+pub(crate) fn ensure_clocks() {
+    unsafe {
+        #[cfg(target_os = "macos")]
+        mach_absolute_time();
+
+        #[cfg(target_os = "linux")]
+        {
+            let mut ts = libc::timespec {
+                tv_sec: 0,
+                tv_nsec: 0,
+            };
+            clock_gettime(libc::CLOCK_MONOTONIC, &mut ts as *mut libc::timespec);
+        }
+    }
+}
+
+/*
+ * TODO: RocksDB schedules timers on multiple threads, including on the simulation thread, and it
+ * can't handle having different views of the clock in different threads.
+ * This should be fixable by creating the DBs in different threads, but that is somewhat invasive.
+
+#[cfg(target_os = "macos")]
+define_sys_interceptor!(
+    fn gettimeofday(tp: *mut libc::timeval, tz: *mut libc::c_void) -> libc::c_int {
+        // NOTE: tz should be NULL.
+        // macOS: timezone is no longer used; this information is kept outside the kernel.
+        if tp.is_null() {
+            return 0;
+        }
+        let time = TimeHandle::current();
+        let dur = time
+            .now_time()
+            .duration_since(std::time::SystemTime::UNIX_EPOCH)
+            .unwrap();
+        tp.write(libc::timeval {
+            tv_sec: dur.as_secs() as _,
+            tv_usec: dur.subsec_micros() as _,
+        });
+        time.clock.advance(Duration::from_micros(5));
+        0
+    }
+);
+*/
+
+#[cfg(target_os = "macos")]
+define_bypass!(bypass_mach_absolute_time,
+    fn mach_absolute_time() -> u64);
+
+#[cfg(target_os = "macos")]
+define_sys_interceptor!(
+    fn mach_absolute_time() -> u64 {
+        #[repr(C)]
+        #[derive(Copy, Clone)]
+        struct MachTimebaseInfo {
+            numer: u32,
+            denom: u32,
+        }
+        type MachTimebaseInfoT = *mut MachTimebaseInfo;
+
+        lazy_static::lazy_static! {
+            static ref MACH_TIME_BASE_INFO: MachTimebaseInfo = {
+                extern "C" {
+                    fn mach_timebase_info(info: MachTimebaseInfoT) -> libc::c_int;
+                }
+
+                let mut info = MachTimebaseInfo { numer: 0, denom: 0 };
+                unsafe {
+                    mach_timebase_info(&mut info as MachTimebaseInfoT);
+                }
+                assert_ne!(info.numer, 0);
+                assert_ne!(info.denom, 0);
+                info
+            };
+        }
+
+        fn mul_div_u64(value: u64, numer: u64, denom: u64) -> u64 {
+            let q = value / denom;
+            let r = value % denom;
+            // Decompose value as (value/denom*denom + value%denom),
+            // substitute into (value*numer)/denom and simplify.
+            // r < denom, so (denom*numer) is the upper bound of (r*numer)
+            q * numer + r * numer / denom
+        }
+
+        let time = match TimeHandle::try_current() {
+            Some(t) => t,
+            None => {
+                // Sometimes Drop impls ask for the current time as the runtime is being dropped. It
+                // might be better to try to completely drop everything owned by the runtime inside
+                // of a block_on() call, but that is tricky to do correctly.
+                trace!("mach_absolute_time called outside of Runtime");
+                return bypass_mach_absolute_time();
+            }
+        };
+
+        let elapsed = time.elapsed();
+        let nanos = elapsed.as_nanos().try_into().unwrap();
+
+        // convert nanos back to mach_absolute_time units
+        mul_div_u64(
+            nanos,
+            MACH_TIME_BASE_INFO.denom as u64,
+            MACH_TIME_BASE_INFO.numer as u64,
+        )
+    }
+);
+
+#[cfg(target_os = "linux")]
+define_bypass!(bypass_clock_gettime,
+    fn clock_gettime(clock_id: libc::clockid_t, ts: *mut libc::timespec) -> libc::c_int);
+
+#[cfg(target_os = "linux")]
+define_sys_interceptor!(
+    fn clock_gettime(clock_id: libc::clockid_t, ts: *mut libc::timespec) -> libc::c_int {
+        let time = match TimeHandle::try_current() {
+            Some(t) => t,
+            None => {
+                // Sometimes Drop impls ask for the current time as the runtime is being dropped. It
+                // might be better to try to completely drop everything owned by the runtime inside
+                // of a block_on() call, but that is tricky to do correctly.
+                trace!("clock_gettime called outside of Runtime");
+                return bypass_clock_gettime();
+            }
+        };
+
+        match clock_id {
+            // used by SystemTime
+            libc::CLOCK_REALTIME | libc::CLOCK_REALTIME_COARSE => {
+                return bypass_clock_gettime(clock_id, ts);
+                /*
+                 * See the TODO above re RocksDB
+                let dur = time
+                    .now_time()
+                    .duration_since(std::time::SystemTime::UNIX_EPOCH)
+                    .unwrap();
+                ts.write(libc::timespec {
+                    tv_sec: dur.as_secs() as _,
+                    tv_nsec: dur.subsec_nanos() as _,
+                });
+                */
+            }
+
+            // used by Instant
+            libc::CLOCK_MONOTONIC | libc::CLOCK_MONOTONIC_RAW | libc::CLOCK_MONOTONIC_COARSE => {
+                // Instant is the same layout as timespec on linux
+                ts.write(std::mem::transmute(time.now_instant()));
+            }
+
+            _ => panic!("unsupported clockid: {}", clock_id),
+        }
+        0
+    }
+);
 
 #[cfg(test)]
 mod tests {
@@ -230,6 +410,13 @@ mod tests {
         let runtime = Runtime::new();
         runtime.block_on(async {
             let t0 = Instant::now();
+            let std_t0 = std::time::Instant::now();
+
+            // Verify that times in other threads are not intercepted.
+            let std_t1 = std::thread::spawn(|| std::time::Instant::now())
+                .join()
+                .unwrap();
+            assert_ne!(std_t0, std_t1);
 
             sleep(Duration::from_secs(1)).await;
             assert!(t0.elapsed() >= Duration::from_secs(1));
@@ -237,6 +424,10 @@ mod tests {
             sleep_until(t0 + Duration::from_secs(2)).await;
             assert!(t0.elapsed() >= Duration::from_secs(2));
 
+            sleep(Duration::from_secs(20)).await;
+
+            // make sure system clock has been intercepted.
+            assert_eq!(std_t0.elapsed(), t0.elapsed());
             assert!(
                 timeout(Duration::from_secs(2), sleep(Duration::from_secs(1)))
                     .await
@@ -247,6 +438,17 @@ mod tests {
                     .await
                     .is_err()
             );
+        });
+    }
+
+    #[test]
+    fn system_clock() {
+        let runtime = Runtime::new();
+        runtime.block_on(async {
+            let t0 = Instant::now();
+            let s0 = SystemTime::now();
+
+            println!("{:?} {:?}", t0, s0);
         });
     }
 }
