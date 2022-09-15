@@ -2,8 +2,8 @@
 //!
 //!
 
-use crate::define_sys_interceptor;
 use crate::rand::{GlobalRng, Rng};
+use crate::{define_bypass, define_sys_interceptor};
 use futures::{select_biased, FutureExt};
 use naive_timer::Timer;
 #[doc(no_inline)]
@@ -14,6 +14,8 @@ use std::{
     task::Waker,
     time::SystemTime,
 };
+
+use tracing::trace;
 
 pub mod error;
 mod instant;
@@ -260,9 +262,14 @@ pub(crate) fn ensure_clocks() {
     }
 }
 
+/*
+ * TODO: RocksDB schedules timers on multiple threads, including on the simulation thread, and it
+ * can't handle having different views of the clock in different threads.
+ * This should be fixable by creating the DBs in different threads, but that is somewhat invasive.
+
 #[cfg(target_os = "macos")]
 define_sys_interceptor!(
-    fn gettimeofday(tp: *mut libc::timeval, tz: *mut libc::timezone) -> libc::c_int {
+    fn gettimeofday(tp: *mut libc::timeval, tz: *mut libc::c_void) -> libc::c_int {
         // NOTE: tz should be NULL.
         // macOS: timezone is no longer used; this information is kept outside the kernel.
         if tp.is_null() {
@@ -277,9 +284,15 @@ define_sys_interceptor!(
             tv_sec: dur.as_secs() as _,
             tv_usec: dur.subsec_micros() as _,
         });
+        time.clock.advance(Duration::from_micros(5));
         0
     }
 );
+*/
+
+#[cfg(target_os = "macos")]
+define_bypass!(bypass_mach_absolute_time,
+    fn mach_absolute_time() -> u64);
 
 #[cfg(target_os = "macos")]
 define_sys_interceptor!(
@@ -317,7 +330,18 @@ define_sys_interceptor!(
             q * numer + r * numer / denom
         }
 
-        let elapsed = TimeHandle::current().elapsed();
+        let time = match TimeHandle::try_current() {
+            Some(t) => t,
+            None => {
+                // Sometimes Drop impls ask for the current time as the runtime is being dropped. It
+                // might be better to try to completely drop everything owned by the runtime inside
+                // of a block_on() call, but that is tricky to do correctly.
+                trace!("mach_absolute_time called outside of Runtime");
+                return bypass_mach_absolute_time();
+            }
+        };
+
+        let elapsed = time.elapsed();
         let nanos = elapsed.as_nanos().try_into().unwrap();
 
         // convert nanos back to mach_absolute_time units
@@ -330,12 +354,29 @@ define_sys_interceptor!(
 );
 
 #[cfg(target_os = "linux")]
+define_bypass!(bypass_clock_gettime,
+    fn clock_gettime(clock_id: libc::clockid_t, ts: *mut libc::timespec) -> libc::c_int);
+
+#[cfg(target_os = "linux")]
 define_sys_interceptor!(
     fn clock_gettime(clock_id: libc::clockid_t, ts: *mut libc::timespec) -> libc::c_int {
-        let time = TimeHandle::current();
+        let time = match TimeHandle::try_current() {
+            Some(t) => t,
+            None => {
+                // Sometimes Drop impls ask for the current time as the runtime is being dropped. It
+                // might be better to try to completely drop everything owned by the runtime inside
+                // of a block_on() call, but that is tricky to do correctly.
+                trace!("clock_gettime called outside of Runtime");
+                return bypass_clock_gettime();
+            }
+        };
+
         match clock_id {
             // used by SystemTime
             libc::CLOCK_REALTIME | libc::CLOCK_REALTIME_COARSE => {
+                return bypass_clock_gettime(clock_id, ts);
+                /*
+                 * See the TODO above re RocksDB
                 let dur = time
                     .now_time()
                     .duration_since(std::time::SystemTime::UNIX_EPOCH)
@@ -344,7 +385,9 @@ define_sys_interceptor!(
                     tv_sec: dur.as_secs() as _,
                     tv_nsec: dur.subsec_nanos() as _,
                 });
+                */
             }
+
             // used by Instant
             libc::CLOCK_MONOTONIC | libc::CLOCK_MONOTONIC_RAW | libc::CLOCK_MONOTONIC_COARSE => {
                 // Instant is the same layout as timespec on linux
