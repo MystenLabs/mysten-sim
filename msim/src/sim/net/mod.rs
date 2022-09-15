@@ -212,6 +212,20 @@ define_sys_interceptor!(
     }
 );
 
+#[cfg(target_os = "linux")]
+define_sys_interceptor!(
+    fn accept4(
+        sock_fd: libc::c_int,
+        address: *mut libc::sockaddr,
+        address_len: *mut libc::socklen_t,
+        // Flag is not needed for anything the simulator cares about
+        _flg: libc::c_int,
+    ) -> libc::c_int {
+        trace!("accept4({})", sock_fd);
+        accept_impl(sock_fd, address, address_len)
+    }
+);
+
 define_sys_interceptor!(
     fn accept(
         sock_fd: libc::c_int,
@@ -219,62 +233,70 @@ define_sys_interceptor!(
         address_len: *mut libc::socklen_t,
     ) -> libc::c_int {
         trace!("accept({})", sock_fd);
-        let result = HostNetworkState::with_socket(
-            sock_fd,
-            |socket| -> Result<SocketAddr, (libc::c_int, libc::c_int)> {
-                let node = plugin::node();
-                let net = plugin::simulator::<NetSim>();
-                let network = net.network.lock().unwrap();
-
-                let endpoint = socket
-                    .endpoint
-                    .as_ref()
-                    .ok_or_else(|| ((-1, libc::EINVAL)))?;
-
-                if endpoint.peer.is_some() {
-                    // attempt to accept on a socket that is already connected.
-                    return Err((-1, libc::EINVAL));
-                }
-
-                // We can't simulate blocking accept in a single-threaded simulator, so if there is no
-                // connection waiting for us, just bail.
-                network
-                    .accept_connect(node, endpoint.addr)
-                    .ok_or((-1, libc::ECONNABORTED))
-            },
-        )
-        .unwrap_or_else(|e| {
-            trace!("socket not found: {}", e);
-            Result::Err((-1, libc::ENOTSOCK))
-        });
-
-        let remote_addr = match result {
-            Err((ret, err)) => {
-                trace!("error status: {} {}", ret, err);
-                set_errno(err);
-                return ret;
-            }
-            Ok(addr) => addr,
-        };
-
-        write_socket_addr(address, address_len, remote_addr);
-
-        let endpoint = Endpoint::connect_sync(remote_addr)
-            .expect("connection failure should already have been detected");
-
-        let fd = libc::dup(0);
-        let socket = SocketState {
-            ty: libc::SOCK_STREAM,
-            _placeholder_file: FileDes(fd),
-            endpoint: Some(Arc::new(endpoint)),
-            listening: false,
-        };
-
-        HostNetworkState::add_socket(fd, socket);
-
-        fd
+        accept_impl(sock_fd, address, address_len)
     }
 );
+
+unsafe fn accept_impl(
+    sock_fd: libc::c_int,
+    address: *mut libc::sockaddr,
+    address_len: *mut libc::socklen_t,
+) -> libc::c_int {
+    let result = HostNetworkState::with_socket(
+        sock_fd,
+        |socket| -> Result<SocketAddr, (libc::c_int, libc::c_int)> {
+            let node = plugin::node();
+            let net = plugin::simulator::<NetSim>();
+            let network = net.network.lock().unwrap();
+
+            let endpoint = socket
+                .endpoint
+                .as_ref()
+                .ok_or_else(|| ((-1, libc::EINVAL)))?;
+
+            if endpoint.peer.is_some() {
+                // attempt to accept on a socket that is already connected.
+                return Err((-1, libc::EINVAL));
+            }
+
+            // We can't simulate blocking accept in a single-threaded simulator, so if there is no
+            // connection waiting for us, just bail.
+            network
+                .accept_connect(node, endpoint.addr)
+                .ok_or((-1, libc::ECONNABORTED))
+        },
+    )
+    .unwrap_or_else(|e| {
+        trace!("socket not found: {}", e);
+        Result::Err((-1, libc::ENOTSOCK))
+    });
+
+    let remote_addr = match result {
+        Err((ret, err)) => {
+            trace!("error status: {} {}", ret, err);
+            set_errno(err);
+            return ret;
+        }
+        Ok(addr) => addr,
+    };
+
+    write_socket_addr(address, address_len, remote_addr);
+
+    let endpoint = Endpoint::connect_sync(remote_addr)
+        .expect("connection failure should already have been detected");
+
+    let fd = libc::dup(0);
+    let socket = SocketState {
+        ty: libc::SOCK_STREAM,
+        _placeholder_file: FileDes(fd),
+        endpoint: Some(Arc::new(endpoint)),
+        listening: false,
+    };
+
+    HostNetworkState::add_socket(fd, socket);
+
+    fd
+}
 
 define_sys_interceptor!(
     fn bind(
