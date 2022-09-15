@@ -33,11 +33,12 @@ macro_rules! define_sys_interceptor {
             lazy_static::lazy_static! {
                 static ref NEXT_DL_SYM: unsafe extern "C" fn ( $($param: $type),* ) -> $ret = unsafe {
 
-                    let fn_name = stringify!($name);
-                    let fn_name_c = std::ffi::CString::new(fn_name).unwrap();
+                    // Can't use CString::new because it allocates, and allocators can call system
+                    // functions...
+                    let fn_name_c = concat!(stringify!($name), "\0");
 
                     let ptr = libc::dlsym(libc::RTLD_NEXT, fn_name_c.as_ptr() as _);
-                    assert!(!ptr.is_null());
+                    assert!(!ptr.is_null(), "{:?}", fn_name_c);
                     std::mem::transmute(ptr)
                 };
             }
@@ -60,8 +61,9 @@ macro_rules! define_bypass {
             lazy_static::lazy_static! {
                 static ref NEXT_DL_SYM: unsafe extern "C" fn ( $($param: $type),* ) -> $ret = unsafe {
 
-                    let fn_name = stringify!($cname);
-                    let fn_name_c = std::ffi::CString::new(fn_name).unwrap();
+                    // Can't use CString::new because it allocates, and allocators can call system
+                    // functions...
+                    let fn_name_c = concat!(stringify!($cname), "\0");
 
                     let ptr = libc::dlsym(libc::RTLD_NEXT, fn_name_c.as_ptr() as _);
                     assert!(!ptr.is_null());
