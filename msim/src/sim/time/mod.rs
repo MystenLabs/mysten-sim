@@ -367,7 +367,7 @@ define_sys_interceptor!(
                 // might be better to try to completely drop everything owned by the runtime inside
                 // of a block_on() call, but that is tricky to do correctly.
                 trace!("clock_gettime called outside of Runtime");
-                return bypass_clock_gettime();
+                return bypass_clock_gettime(clock_id, ts);
             }
         };
 
