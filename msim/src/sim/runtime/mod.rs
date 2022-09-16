@@ -364,6 +364,15 @@ impl NodeHandle {
         self.task.spawn(future)
     }
 
+    /// Spawn a blocking task.
+    pub fn spawn_blocking<F, R>(&self, f: F) -> JoinHandle<R>
+    where
+        F: FnOnce() -> R + Send + 'static,
+        R: Send + 'static,
+    {
+        self.task.spawn(async move { f() })
+    }
+
     /// Join the node.
     /// TODO: unimplemented
     pub fn join(self) -> Result<(), ()> {

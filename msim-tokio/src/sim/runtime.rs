@@ -6,7 +6,7 @@ use std::time::Duration;
 use msim::runtime as ms_runtime;
 use msim::task::JoinHandle;
 
-use tracing::debug;
+use tracing::{debug, warn};
 
 #[derive(Clone)]
 pub struct Handle {
@@ -47,6 +47,18 @@ impl Handle {
         F::Output: Send + 'static,
     {
         ms_runtime::NodeHandle::current().spawn(future)
+    }
+
+    pub fn spawn_blocking<F, R>(&self, f: F) -> JoinHandle<R>
+    where
+        F: FnOnce() -> R + Send + 'static,
+        R: Send + 'static,
+    {
+        warn!(
+            "spawn_blocking() call in simulator may cause deadlocks if spawned task \
+            attempts to do I/O"
+        );
+        ms_runtime::NodeHandle::current().spawn_blocking(f)
     }
 }
 
