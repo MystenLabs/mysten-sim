@@ -58,7 +58,7 @@ struct Inner {
 
 impl GlobalRng {
     /// Create a new RNG using the given seed.
-    pub(crate) fn new_with_seed(seed: u64) -> Self {
+    pub fn new_with_seed(seed: u64) -> Self {
         // XXX: call this function to make sure it won't be gc.
         unsafe { getentropy(std::ptr::null_mut(), 0) };
         if !init_std_random_state(seed) {
@@ -268,7 +268,7 @@ mod tests {
         let mut seqs = BTreeSet::new();
         for i in 0..9 {
             let seq = std::thread::spawn(move || {
-                let runtime = Runtime::with_seed_and_config(i / 3, crate::Config::default());
+                let runtime = Runtime::with_seed_and_config(i / 3, crate::SimConfig::default());
                 runtime
                     .block_on(async { (0..10).map(|_| rand::random::<u64>()).collect::<Vec<_>>() })
             })
@@ -284,7 +284,7 @@ mod tests {
         let mut seqs = BTreeSet::new();
         for i in 0..9 {
             let seq = std::thread::spawn(move || {
-                let runtime = Runtime::with_seed_and_config(i / 3, crate::Config::default());
+                let runtime = Runtime::with_seed_and_config(i / 3, crate::SimConfig::default());
                 runtime.block_on(async {
                     let set = (0..10).map(|i| (i, i)).collect::<HashMap<_, _>>();
                     set.into_iter().collect::<Vec<_>>()
