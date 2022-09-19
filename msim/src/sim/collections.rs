@@ -439,7 +439,7 @@ mod tests {
     fn deterministic_hashset() {
         let mut seqs = BTreeSet::new();
         for i in 0..9 {
-            let runtime = Runtime::with_seed_and_config(i / 3, crate::Config::default());
+            let runtime = Runtime::with_seed_and_config(i / 3, crate::SimConfig::default());
             let seq = runtime.block_on(async {
                 let set = (0..10).collect::<HashSet<i32>>();
                 set.into_iter().collect::<Vec<_>>()
@@ -453,7 +453,7 @@ mod tests {
     fn deterministic_hashmap() {
         let mut seqs = BTreeSet::new();
         for i in 0..9 {
-            let runtime = Runtime::with_seed_and_config(i / 3, crate::Config::default());
+            let runtime = Runtime::with_seed_and_config(i / 3, crate::SimConfig::default());
             let seq = runtime.block_on(async {
                 let set = (0..10).map(|i| (i, i)).collect::<HashMap<_, _>>();
                 set.into_iter().collect::<Vec<_>>()

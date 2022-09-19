@@ -1,71 +1,79 @@
 //! Simulation configuration.
 
-use std::{
-    hash::{Hash, Hasher},
-    str::FromStr,
-};
-
-use crate::net;
-use ahash::AHasher;
-use serde::{Deserialize, Serialize};
+pub use crate::net::config::*;
 
 /// Simulation configuration.
 #[cfg_attr(docsrs, doc(cfg(msim)))]
-#[derive(Debug, Default, Serialize, Deserialize, PartialEq, Hash, Clone)]
-pub struct Config {
+#[derive(Debug, Default, Clone)]
+pub struct SimConfig {
     /// Network configurations.
-    #[serde(default)]
-    pub net: net::Config,
+    pub net: NetworkConfig,
 }
 
-impl Config {
-    /// Returns the hash value of this config.
-    pub fn hash(&self) -> u64 {
-        let mut hasher = AHasher::new_with_keys(0, 0);
-        Hash::hash(self, &mut hasher);
-        hasher.finish()
+/// Configuration for a series of tests
+#[derive(Clone)]
+pub struct TestConfig {
+    /// The test will be repeated N times with each config
+    pub configs: Vec<(usize, SimConfig)>,
+}
+
+impl From<SimConfig> for TestConfig {
+    fn from(config: SimConfig) -> Self {
+        Self {
+            configs: vec![(1, config)],
+        }
     }
 }
 
-/// Parse a config from TOML.
-impl FromStr for Config {
-    type Err = toml::de::Error;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        toml::from_str(s)
+impl From<Vec<SimConfig>> for TestConfig {
+    fn from(config: Vec<SimConfig>) -> Self {
+        Self {
+            configs: config.iter().map(|c| (1, c.clone())).collect(),
+        }
     }
 }
 
-/// Print the config into TOML.
-impl ToString for Config {
-    fn to_string(&self) -> String {
-        toml::to_string_pretty(self).unwrap()
+impl From<Vec<(usize, SimConfig)>> for TestConfig {
+    fn from(configs: Vec<(usize, SimConfig)>) -> Self {
+        Self { configs }
     }
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use std::time::Duration;
+mod test {
 
-    #[test]
-    fn parse() {
-        // TODO: better way to parse Duration
-        let config: Config = r#"
-        [net]
-        packet_loss_rate = 0.1
-        send_latency = { start = { secs = 0, nanos = 1000000 }, end = { secs = 0, nanos = 10000000 } }
-        "#
-        .parse()
-        .unwrap();
-        assert_eq!(
-            config,
-            Config {
-                net: net::Config {
-                    packet_loss_rate: 0.1,
-                    send_latency: Duration::from_millis(1)..Duration::from_millis(10)
-                },
-            }
-        );
+    use super::*;
+    use msim_macros::sim_test;
+    use rand::Rng;
+
+    fn test_config() -> SimConfig {
+        Default::default()
+    }
+
+    fn test_config_multiple() -> Vec<SimConfig> {
+        vec![Default::default(), Default::default()]
+    }
+
+    fn test_config_multiple_repeat() -> Vec<(usize, SimConfig)> {
+        vec![(3, Default::default()), (3, Default::default())]
+    }
+
+    // There's no easy way to actually test the behavior here, so just run the test with
+    // --no-capture and eyeball the output. (Main thing is you shouldn't be seeing repeated
+    // output).
+
+    #[sim_test(crate = "crate", config = "test_config()")]
+    async fn config_test() {
+        println!("single {:08x}", rand::thread_rng().gen::<u32>());
+    }
+
+    #[sim_test(crate = "crate", config = "test_config_multiple()")]
+    async fn config_test_multiple() {
+        println!("multiple {:08x}", rand::thread_rng().gen::<u32>());
+    }
+
+    #[sim_test(crate = "crate", config = "test_config_multiple_repeat()")]
+    async fn config_test_multiple_repeat() {
+        println!("multiple repeat {:08x}", rand::thread_rng().gen::<u32>());
     }
 }

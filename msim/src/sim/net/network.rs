@@ -1,24 +1,22 @@
+use super::config::NetworkConfig;
 use crate::{plugin, rand::*, task::NodeId, time::TimeHandle};
 use futures::channel::oneshot;
-use serde::{Deserialize, Serialize};
 use std::{
     any::Any,
     collections::{hash_map::Entry, HashMap, HashSet, VecDeque},
-    hash::{Hash, Hasher},
     io,
     net::{IpAddr, SocketAddr},
-    ops::Range,
     sync::{Arc, Mutex},
     task::{Context, Waker},
-    time::Duration,
 };
+
 use tracing::*;
 
 /// A simulated network.
 pub(crate) struct Network {
     rand: GlobalRng,
     time: TimeHandle,
-    config: Config,
+    config: NetworkConfig,
     stat: Stat,
     nodes: HashMap<NodeId, Node>,
     /// Maps the global IP to its node.
@@ -38,39 +36,6 @@ struct Node {
     sockets: HashMap<u16, Arc<Mutex<Mailbox>>>,
 }
 
-/// Network configurations.
-#[cfg_attr(docsrs, doc(cfg(msim)))]
-#[derive(Debug, Serialize, Deserialize, PartialEq, Clone)]
-pub struct Config {
-    /// Possibility of packet loss.
-    #[serde(default)]
-    pub packet_loss_rate: f64,
-    /// The latency range of sending packets.
-    #[serde(default = "default_send_latency")]
-    pub send_latency: Range<Duration>,
-}
-
-impl Default for Config {
-    fn default() -> Self {
-        Config {
-            packet_loss_rate: 0.0,
-            send_latency: default_send_latency(),
-        }
-    }
-}
-
-const fn default_send_latency() -> Range<Duration> {
-    Duration::from_millis(1)..Duration::from_millis(10)
-}
-
-#[allow(clippy::derive_hash_xor_eq)]
-impl Hash for Config {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        self.packet_loss_rate.to_bits().hash(state);
-        self.send_latency.hash(state);
-    }
-}
-
 /// Network statistics.
 #[cfg_attr(docsrs, doc(cfg(msim)))]
 #[derive(Debug, Default, Clone)]
@@ -80,7 +45,7 @@ pub struct Stat {
 }
 
 impl Network {
-    pub fn new(rand: GlobalRng, time: TimeHandle, config: Config) -> Self {
+    pub fn new(rand: GlobalRng, time: TimeHandle, config: NetworkConfig) -> Self {
         Self {
             rand,
             time,
@@ -101,7 +66,7 @@ impl Network {
         }
     }
 
-    pub fn update_config(&mut self, f: impl FnOnce(&mut Config)) {
+    pub fn update_config(&mut self, f: impl FnOnce(&mut NetworkConfig)) {
         f(&mut self.config);
     }
 
@@ -260,10 +225,17 @@ impl Network {
             trace!("clogged");
             return;
         }
-        if self.rand.gen_bool(self.config.packet_loss_rate) {
+
+        // TODO: need to distinguish between tcp/udp for the purposes of packet loss.
+        let plr = self
+            .config
+            .packet_loss
+            .packet_loss_rate(&mut self.rand, node, dst_node);
+        if self.rand.gen_bool(plr) {
             trace!("packet loss");
             return;
         }
+
         let ep = match self.nodes[&dst_node].sockets.get(&dst.port()) {
             Some(ep) => ep.clone(),
             None => {
@@ -276,7 +248,10 @@ impl Network {
             data,
             from: src,
         };
-        let latency = self.rand.gen_range(self.config.send_latency.clone());
+        let latency = self
+            .config
+            .latency
+            .get_latency(&mut self.rand, node, dst_node);
         trace!("delay: {latency:?}");
         self.time
             .add_timer(self.time.now_instant() + latency, move || {

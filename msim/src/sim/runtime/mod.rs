@@ -47,11 +47,11 @@ impl Default for Runtime {
 impl Runtime {
     /// Create a new runtime instance with default seed and config.
     pub fn new() -> Self {
-        Self::with_seed_and_config(0, Config::default())
+        Self::with_seed_and_config(0, SimConfig::default())
     }
 
     /// Create a new runtime instance with given seed and config.
-    pub fn with_seed_and_config(seed: u64, config: Config) -> Self {
+    pub fn with_seed_and_config(seed: u64, config: SimConfig) -> Self {
         let mut rand = rand::GlobalRng::new_with_seed(seed);
         tokio::msim_adapter::util::reset_rng(rand.gen::<u64>());
         let task = task::Executor::new(rand.clone());
@@ -202,7 +202,7 @@ pub struct Handle {
     pub(crate) time: time::TimeHandle,
     pub(crate) task: task::TaskHandle,
     pub(crate) sims: Arc<Mutex<HashMap<TypeId, Arc<dyn plugin::Simulator>>>>,
-    pub(crate) config: Config,
+    pub(crate) config: SimConfig,
 }
 
 impl Handle {

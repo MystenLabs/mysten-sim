@@ -1,6 +1,6 @@
 #![deny(missing_docs)]
 
-pub use self::config::Config;
+pub use self::config::*;
 pub(crate) use self::runtime::context;
 
 #[cfg(feature = "macros")]

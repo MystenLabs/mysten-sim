@@ -1,19 +1,19 @@
 //! Asynchronous file system.
 
-use tracing::*;
 use std::{
     collections::HashMap,
     io::{Error, ErrorKind, Result},
     path::{Path, PathBuf},
     sync::{Arc, Mutex, RwLock},
 };
+use tracing::*;
 
 use crate::{
     plugin::{node, simulator, Simulator},
     rand::GlobalRng,
     task::NodeId,
     time::TimeHandle,
-    Config,
+    SimConfig,
 };
 
 /// File system simulator.
@@ -24,7 +24,7 @@ pub struct FsSim {
 }
 
 impl Simulator for FsSim {
-    fn new(_rand: &GlobalRng, _time: &TimeHandle, _config: &Config) -> Self {
+    fn new(_rand: &GlobalRng, _time: &TimeHandle, _config: &SimConfig) -> Self {
         Default::default()
     }
 

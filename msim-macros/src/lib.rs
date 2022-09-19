@@ -139,6 +139,21 @@ pub fn test(_args: TokenStream, item: TokenStream) -> TokenStream {
 ///     If any non-determinism detected, it will panic as soon as possible.
 ///
 ///     By default, it is disabled.
+///
+/// The test can also be provided a configuration by passing an expression with a type that
+/// can be made into() a TestConfig - SimConfig is the basic choice, see TestConfig for more
+/// options.
+///
+/// Usage:
+///
+///    fn my_config() -> SimConfig {
+///       SimConfig { ... }
+///    }
+///
+///    #[sim_test(config = "my_config()")]
+///    async fn test() {
+///      ...
+///    }
 #[proc_macro_attribute]
 pub fn sim_test(args: TokenStream, item: TokenStream) -> TokenStream {
     let input = syn::parse_macro_input!(item as syn::ItemFn);
@@ -204,21 +219,19 @@ fn parse_test(mut input: syn::ItemFn, args: syn::AttributeArgs) -> Result<TokenS
         body.clone()
     };
 
+    let config_expr = test_config.network_config_expr.unwrap_or_else(|| {
+        syn::parse2(quote! { #crate_ident::SimConfig::default() }).expect("parse error")
+    });
+
     let check_determinism = test_config.check_determinism;
 
     let brace_token = input.block.brace_token;
     input.block = syn::parse2(quote_spanned! {last_stmt_end_span=>
         {
-            let seed: u64 = if let Ok(seed_str) = ::std::env::var("MSIM_TEST_SEED") {
+            let mut seed: u64 = if let Ok(seed_str) = ::std::env::var("MSIM_TEST_SEED") {
                 seed_str.parse().expect("MSIM_TEST_SEED should be an integer")
             } else {
                 ::std::time::SystemTime::now().duration_since(::std::time::SystemTime::UNIX_EPOCH).unwrap().as_secs()
-            };
-            let config = if let Ok(config_path) = std::env::var("MSIM_TEST_CONFIG") {
-                let content = std::fs::read_to_string(config_path).expect("failed to read config file");
-                content.parse::<::#crate_ident::Config>().expect("failed to parse config file")
-            } else {
-                ::#crate_ident::Config::default()
             };
             let mut count: u64 = if let Ok(num_str) = std::env::var("MSIM_TEST_NUM") {
                 num_str.parse().expect("MSIM_TEST_NUM should be an integer")
@@ -233,33 +246,71 @@ fn parse_test(mut input: syn::ItemFn, args: syn::AttributeArgs) -> Result<TokenS
                 count = count.max(2);
             }
 
+            fn next_seed(seed: u64) -> u64 {
+                use rand::Rng;
+                #crate_ident::rand::GlobalRng::new_with_seed(seed).gen::<u64>()
+            }
+
             let mut rand_log = None;
             let mut return_value = None;
-            for i in 0..count {
-                let seed = if check { seed } else { seed + i };
-                let rand_log0 = rand_log.take();
-                let config_ = config.clone();
-                let res = std::thread::spawn(move || {
-                    let mut rt = ::#crate_ident::runtime::Runtime::with_seed_and_config(seed, config_);
+            for _i in 0..count {
+                if !check {
+                    seed = next_seed(seed);
+                }
+
+                let mut seed = seed;
+
+                let config = std::thread::spawn(move || {
+                    let rt = #crate_ident::runtime::Runtime::with_seed_and_config(seed, #crate_ident::SimConfig::default());
+                    rt.block_on(async move {
+                        // run config_expr inside runtime so it can access rng.
+                        #config_expr
+                    })
+                }).join().expect("config generation thread panicked!");
+
+                let test_config: #crate_ident::TestConfig = config.into();
+                if check {
+                    assert_eq!(
+                        test_config.configs.len(), 1,
+                        "can't check determinism with repeated test"
+                    );
+                }
+
+                for (repeat, sim_config) in test_config.configs.iter() {
+                    assert_ne!(*repeat, 0);
                     if check {
-                        rt.enable_determinism_check(rand_log0);
+                        assert_eq!(
+                            *repeat, 1,
+                            "can't check determinism with repeated test"
+                        );
                     }
-                    if let Some(limit) = time_limit_s {
-                        rt.set_time_limit(::std::time::Duration::from_secs_f64(limit));
-                    }
-                    let ret = rt.block_on(async #body);
-                    let log = rt.take_rand_log();
-                    (ret, log)
-                }).join();
-                match res {
-                    Ok((ret, log)) => {
-                        return_value = Some(ret);
-                        rand_log = log;
-                    }
-                    Err(e) => {
-                        println!("note: run with `MSIM_TEST_SEED={}` environment variable to reproduce this error", seed);
-                        println!("      and make sure `MSIM_CONFIG_HASH={:016X}`", config.hash());
-                        ::std::panic::resume_unwind(e);
+
+                    for _j in 0..*repeat {
+                        let sim_config = sim_config.clone();
+                        let rand_log0 = rand_log.take();
+                        let res = std::thread::spawn(move || {
+                            let mut rt = #crate_ident::runtime::Runtime::with_seed_and_config(seed, sim_config);
+                            if check {
+                                rt.enable_determinism_check(rand_log0);
+                            }
+                            if let Some(limit) = time_limit_s {
+                                rt.set_time_limit(::std::time::Duration::from_secs_f64(limit));
+                            }
+                            let ret = rt.block_on(async #body);
+                            let log = rt.take_rand_log();
+                            (ret, log)
+                        }).join();
+                        seed += 1;
+                        match res {
+                            Ok((ret, log)) => {
+                                return_value = Some(ret);
+                                rand_log = log;
+                            }
+                            Err(e) => {
+                                println!("note: run with `MSIM_TEST_SEED={}` environment variable to reproduce this error", seed);
+                                ::std::panic::resume_unwind(e);
+                            }
+                        }
                     }
                 }
             }
@@ -279,6 +330,7 @@ fn parse_test(mut input: syn::ItemFn, args: syn::AttributeArgs) -> Result<TokenS
 
 struct TestConfig {
     crate_name: Option<String>,
+    network_config_expr: Option<syn::Expr>,
     run_in_client_node: bool,
     check_determinism: bool,
 }
@@ -292,12 +344,17 @@ impl TestConfig {
         self.crate_name = Some(name_ident.to_string());
         Ok(())
     }
+
+    fn set_config_network_expr(&mut self, expr: syn::Expr) {
+        self.network_config_expr = Some(expr);
+    }
 }
 
 impl Default for TestConfig {
     fn default() -> Self {
         Self {
             crate_name: None,
+            network_config_expr: None,
             run_in_client_node: true,
             check_determinism: false,
         }
@@ -333,6 +390,16 @@ fn build_test_config(args: syn::AttributeArgs) -> Result<TestConfig, syn::Error>
                     }
                     "no_client_node" => {
                         config.run_in_client_node = false;
+                    }
+                    "config" => {
+                        let expr = match &namevalue.lit {
+                            syn::Lit::Str(litstr) => syn::parse_str::<syn::Expr>(&litstr.value())?,
+                            _ => {
+                                let msg = format!("expected string literal");
+                                return Err(syn::Error::new_spanned(namevalue, msg));
+                            }
+                        };
+                        config.set_config_network_expr(expr);
                     }
                     "crate" => {
                         config.set_crate_name(
@@ -413,4 +480,3 @@ fn parse_ident(lit: syn::Lit, span: Span, field: &str) -> Result<Ident, syn::Err
         )),
     }
 }
-

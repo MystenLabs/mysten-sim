@@ -568,7 +568,7 @@ mod tests {
     fn random_select_from_ready_tasks() {
         let mut seqs = HashSet::new();
         for seed in 0..10 {
-            let runtime = Runtime::with_seed_and_config(seed, crate::Config::default());
+            let runtime = Runtime::with_seed_and_config(seed, crate::SimConfig::default());
             let seq = runtime.block_on(async {
                 let (tx, rx) = std::sync::mpsc::channel();
                 let mut tasks = vec![];

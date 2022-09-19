@@ -44,7 +44,10 @@ use std::{
 };
 use tracing::*;
 
-pub use self::network::{Config, Stat};
+pub mod config;
+pub use config::*;
+
+pub use self::network::Stat;
 use self::network::{Network, Payload};
 use crate::{
     define_bypass, define_sys_interceptor, plugin,
@@ -755,7 +758,7 @@ define_sys_interceptor!(
 );
 
 impl plugin::Simulator for NetSim {
-    fn new(rand: &GlobalRng, time: &TimeHandle, config: &crate::Config) -> Self {
+    fn new(rand: &GlobalRng, time: &TimeHandle, config: &crate::SimConfig) -> Self {
         NetSim {
             network: Mutex::new(Network::new(rand.clone(), time.clone(), config.net.clone())),
             rand: rand.clone(),
@@ -782,7 +785,7 @@ impl NetSim {
     }
 
     /// Update network configurations.
-    pub fn update_config(&self, f: impl FnOnce(&mut Config)) {
+    pub fn update_config(&self, f: impl FnOnce(&mut NetworkConfig)) {
         let mut network = self.network.lock().unwrap();
         network.update_config(f);
     }
