@@ -54,10 +54,19 @@ impl Handle {
         F: FnOnce() -> R + Send + 'static,
         R: Send + 'static,
     {
-        warn!(
-            "spawn_blocking() call in simulator may cause deadlocks if spawned task \
-            attempts to do I/O"
-        );
+        // Only emit this spammy log once - there is a log_once crate that does this, but
+        // it uses static storage instead of thread_local!, which is likely to cause
+        // determinism/repeatability problems in the sim.
+        thread_local! {
+            static LOG_ONCE: () = {
+                warn!(
+                    "spawn_blocking() call in simulator may cause deadlocks if spawned task \
+                    attempts to do I/O"
+                );
+            };
+        }
+        LOG_ONCE.with(|_| ());
+
         ms_runtime::NodeHandle::current().spawn_blocking(f)
     }
 }
