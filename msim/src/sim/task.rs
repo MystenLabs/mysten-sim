@@ -360,6 +360,42 @@ impl TaskNodeHandle {
             task: Mutex::new(Some(task.fallible())),
         }
     }
+
+    pub fn enter(&self) -> crate::context::TaskEnterGuard {
+        crate::context::enter_task(self.info.clone())
+    }
+
+    pub async fn await_future_in_node<F: Future>(&self, fut: F) -> F::Output {
+        let wrapped = TaskEnteringFuture::new(self.info.clone(), fut);
+        wrapped.await
+    }
+}
+
+// Polls a wrapped future, entering the given task before each poll().
+struct TaskEnteringFuture<F: Future> {
+    task: Arc<TaskInfo>,
+    inner: Pin<Box<F>>,
+}
+
+impl<F: Future> TaskEnteringFuture<F> {
+    fn new(task: Arc<TaskInfo>, inner: F) -> Self {
+        Self {
+            task,
+            inner: Box::pin(inner),
+        }
+    }
+}
+
+impl<F> Future for TaskEnteringFuture<F>
+where
+    F: Future,
+{
+    type Output = F::Output;
+
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let _guard = crate::context::enter_task(self.task.clone());
+        self.inner.as_mut().poll(cx)
+    }
 }
 
 /// Spawns a new asynchronous task, returning a [`JoinHandle`] for it.
@@ -440,7 +476,7 @@ impl<T> Drop for JoinHandle<T> {
 mod tests {
     use super::*;
     use crate::{
-        runtime::{Handle, Runtime},
+        runtime::{Handle, NodeHandle, Runtime},
         time,
     };
     use std::{collections::HashSet, sync::atomic::AtomicUsize, time::Duration};
@@ -588,5 +624,30 @@ mod tests {
             seqs.insert(seq);
         }
         assert_eq!(seqs.len(), 10);
+    }
+
+    #[test]
+    fn await_future_in_node() {
+        let runtime = Runtime::new();
+        let node1 = runtime.create_node().build();
+        let node2 = runtime.create_node().build();
+        let node1_id = node1.id();
+
+        runtime.block_on(async move {
+            node1
+                .spawn(async move {
+                    let id = node2
+                        .await_future_in_node(async move {
+                            tokio::task::yield_now().await;
+                            NodeHandle::current().id()
+                        })
+                        .await;
+
+                    assert_eq!(id, node2.id());
+                    assert_eq!(NodeHandle::current().id(), node1_id);
+                })
+                .await
+                .unwrap();
+        });
     }
 }

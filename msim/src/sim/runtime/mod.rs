@@ -2,6 +2,7 @@
 
 use super::*;
 use crate::assert_send_sync;
+use crate::context::TaskEnterGuard;
 use crate::net::NetSim;
 use crate::task::{JoinHandle, NodeId};
 use ::rand::Rng;
@@ -332,6 +333,10 @@ impl<'a> NodeBuilder<'a> {
     }
 }
 
+/// Guard for entering a node context.
+#[must_use]
+pub struct NodeEnterGuard(TaskEnterGuard);
+
 /// Handle to a node.
 #[derive(Clone)]
 pub struct NodeHandle {
@@ -384,6 +389,19 @@ impl NodeHandle {
     pub fn ip(&self) -> Option<IpAddr> {
         let net = plugin::simulator::<NetSim>();
         net.get_ip(self.id())
+    }
+
+    /// await a future in a node. This is equivalent to calling
+    /// NodeHandle::spawn(fut).await.unwrap(), except without the requirement that everything
+    /// involved is Send + 'static.
+    pub async fn await_future_in_node<F: Future>(&self, fut: F) -> F::Output {
+        self.task.await_future_in_node(fut).await
+    }
+
+    /// Enter the node - all tasks spawned, network connections created, etc while the guard is
+    /// held will come from the node in question.
+    pub fn enter_node(&self) -> NodeEnterGuard {
+        NodeEnterGuard(self.task.enter())
     }
 }
 
