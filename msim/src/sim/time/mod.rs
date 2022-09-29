@@ -178,6 +178,15 @@ pub fn timeout<T: Future>(
     handle.timeout(duration, future)
 }
 
+/// Require a `Future` to complete before the specified deadline.
+pub fn timeout_at<T: Future>(
+    deadline: Instant,
+    future: T,
+) -> impl Future<Output = Result<T::Output, error::Elapsed>> {
+    let duration = deadline.saturating_duration_since(Instant::now());
+    timeout(duration, future)
+}
+
 #[derive(Clone)]
 struct ClockHandle {
     inner: Arc<Mutex<Clock>>,
