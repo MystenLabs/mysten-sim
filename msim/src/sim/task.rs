@@ -441,6 +441,16 @@ impl<T> JoinHandle<T> {
         self.task.lock().unwrap().take();
     }
 
+    /// Check if the task associate with the handle is finished.
+    pub fn is_finished(&self) -> bool {
+        self.task
+            .lock()
+            .unwrap()
+            .as_ref()
+            .map(|task| task.is_finished())
+            .unwrap_or(true)
+    }
+
     /// Cancel the task when this handle is dropped.
     #[doc(hidden)]
     pub fn cancel_on_drop(self) -> FallibleTask<T> {
