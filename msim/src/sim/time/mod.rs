@@ -4,16 +4,18 @@
 
 use crate::rand::{GlobalRng, Rng};
 use crate::{define_bypass, define_sys_interceptor};
-use futures::{select_biased, FutureExt};
 use naive_timer::Timer;
 #[doc(no_inline)]
 pub use std::time::Duration;
 use std::{
     future::Future,
+    pin::Pin,
     sync::{Arc, Mutex},
-    task::Waker,
+    task::{Context, Poll, Waker},
     time::SystemTime,
 };
+
+use pin_project_lite::pin_project;
 
 use tracing::trace;
 
@@ -128,17 +130,11 @@ impl TimeHandle {
 
     /// Require a `Future` to complete before the specified duration has elapsed.
     // TODO: make it Send
-    pub fn timeout<T: Future>(
-        &self,
-        duration: Duration,
-        future: T,
-    ) -> impl Future<Output = Result<T::Output, error::Elapsed>> {
-        let timeout = self.sleep(duration);
-        async move {
-            select_biased! {
-                res = future.fuse() => Ok(res),
-                _ = timeout.fuse() => Err(error::Elapsed),
-            }
+    pub fn timeout<T: Future>(&self, duration: Duration, future: T) -> Timeout<T> {
+        let delay = self.sleep(duration);
+        Timeout {
+            value: future,
+            delay,
         }
     }
 
@@ -163,6 +159,53 @@ impl TimeHandle {
     }
 }
 
+pin_project! {
+    /// Future returned by [`timeout`](timeout) and [`timeout_at`](timeout_at).
+    #[must_use = "futures do nothing unless you `.await` or poll them"]
+    #[derive(Debug)]
+    pub struct Timeout<T> {
+        #[pin]
+        value: T,
+        #[pin]
+        delay: Sleep,
+    }
+}
+
+impl<T> Timeout<T> {
+    /// Gets a reference to the underlying value in this timeout.
+    pub fn get_ref(&self) -> &T {
+        &self.value
+    }
+
+    /// Gets a mutable reference to the underlying value in this timeout.
+    pub fn get_mut(&mut self) -> &mut T {
+        &mut self.value
+    }
+
+    /// Consumes this timeout, returning the underlying value.
+    pub fn into_inner(self) -> T {
+        self.value
+    }
+}
+
+impl<T> Future for Timeout<T>
+where
+    T: Future,
+{
+    type Output = Result<T::Output, error::Elapsed>;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let this = self.project();
+        if let Poll::Ready(v) = this.value.poll(cx) {
+            return Poll::Ready(Ok(v));
+        }
+        match this.delay.poll(cx) {
+            Poll::Ready(()) => Poll::Ready(Err(error::Elapsed)),
+            Poll::Pending => Poll::Pending,
+        }
+    }
+}
+
 /// Supply tokio::time::advance() API (for compilation only - this method
 /// is meaningless inside the simulator).
 pub async fn advance(_duration: Duration) {
@@ -170,19 +213,13 @@ pub async fn advance(_duration: Duration) {
 }
 
 /// Require a `Future` to complete before the specified duration has elapsed.
-pub fn timeout<T: Future>(
-    duration: Duration,
-    future: T,
-) -> impl Future<Output = Result<T::Output, error::Elapsed>> {
+pub fn timeout<T: Future>(duration: Duration, future: T) -> Timeout<T> {
     let handle = TimeHandle::current();
     handle.timeout(duration, future)
 }
 
 /// Require a `Future` to complete before the specified deadline.
-pub fn timeout_at<T: Future>(
-    deadline: Instant,
-    future: T,
-) -> impl Future<Output = Result<T::Output, error::Elapsed>> {
+pub fn timeout_at<T: Future>(deadline: Instant, future: T) -> Timeout<T> {
     let duration = deadline.saturating_duration_since(Instant::now());
     timeout(duration, future)
 }
