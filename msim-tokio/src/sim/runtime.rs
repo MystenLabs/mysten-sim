@@ -89,6 +89,10 @@ impl Runtime {
         })
     }
 
+    pub fn handle(&self) -> &Handle {
+        &self.handle
+    }
+
     pub fn block_on<F: Future>(&self, _future: F) -> F::Output {
         // there may not be a good way to do this that doesn't deadlock the sim.
         todo!()
