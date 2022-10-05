@@ -34,6 +34,15 @@ struct Node {
     ip: Option<IpAddr>,
     /// Sockets in the node.
     sockets: HashMap<u16, Arc<Mutex<Mailbox>>>,
+
+    /// Next ephemeral port. There is some code in sui/narwhal that wants to pick ports in advance
+    /// and then bind to them later. This is done in narwhal by binding to an ephemeral port,
+    /// making a connection, and then relying on time-wait behavior to reserve the port until it is
+    /// used later.
+    ///
+    /// Instead of simulating time-wait behavior we just don't hand out the same port twice if we
+    /// can help it.
+    next_ephemeral_port: u16,
 }
 
 /// Network statistics.
@@ -149,11 +158,13 @@ impl Network {
         }
         // resolve port if unspecified
         if addr.port() == 0 {
-            let port = (32768..=u16::MAX)
+            let next_ephemeral_port = node.next_ephemeral_port;
+            let port = (next_ephemeral_port..=u16::MAX)
                 .find(|port| !node.sockets.contains_key(port))
                 .ok_or_else(|| {
                     io::Error::new(io::ErrorKind::AddrInUse, "no available ephemeral port")
                 })?;
+            node.next_ephemeral_port = port.wrapping_add(1);
             addr.set_port(port);
         }
         // insert socket
