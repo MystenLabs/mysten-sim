@@ -254,14 +254,10 @@ fn parse_test(mut input: syn::ItemFn, args: syn::AttributeArgs) -> Result<TokenS
             let mut rand_log = None;
             let mut return_value = None;
             for _i in 0..count {
-                if !check {
-                    seed = next_seed(seed);
-                }
-
-                let mut seed = seed;
+                let mut inner_seed = seed;
 
                 let config = std::thread::spawn(move || {
-                    let rt = #crate_ident::runtime::Runtime::with_seed_and_config(seed, #crate_ident::SimConfig::default());
+                    let rt = #crate_ident::runtime::Runtime::with_seed_and_config(inner_seed, #crate_ident::SimConfig::default());
                     rt.block_on(async move {
                         // run config_expr inside runtime so it can access rng.
                         #config_expr
@@ -289,7 +285,7 @@ fn parse_test(mut input: syn::ItemFn, args: syn::AttributeArgs) -> Result<TokenS
                         let sim_config = sim_config.clone();
                         let rand_log0 = rand_log.take();
                         let res = std::thread::spawn(move || {
-                            let mut rt = #crate_ident::runtime::Runtime::with_seed_and_config(seed, sim_config);
+                            let mut rt = #crate_ident::runtime::Runtime::with_seed_and_config(inner_seed, sim_config);
                             if check {
                                 rt.enable_determinism_check(rand_log0);
                             }
@@ -300,18 +296,22 @@ fn parse_test(mut input: syn::ItemFn, args: syn::AttributeArgs) -> Result<TokenS
                             let log = rt.take_rand_log();
                             (ret, log)
                         }).join();
-                        seed += 1;
                         match res {
                             Ok((ret, log)) => {
                                 return_value = Some(ret);
                                 rand_log = log;
                             }
                             Err(e) => {
-                                println!("note: run with `MSIM_TEST_SEED={}` environment variable to reproduce this error", seed);
+                                println!("note: run with `MSIM_TEST_SEED={}` environment variable to reproduce this error", inner_seed);
                                 ::std::panic::resume_unwind(e);
                             }
                         }
+                        inner_seed += 1;
                     }
+                }
+
+                if !check {
+                    seed = next_seed(seed);
                 }
             }
             return_value.unwrap()
