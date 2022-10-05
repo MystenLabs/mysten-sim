@@ -223,7 +223,7 @@ impl TaskHandle {
             inner: Arc::new(NodeInfo {
                 node: id,
                 name: node.info.name(),
-                span: error_span!(parent: None, "node", %id, name = &node.info.name()),
+                span: error_span!(parent: None, "node", id = %id.0, name = &node.info.name()),
             }),
             paused: AtomicBool::new(false),
             killed: AtomicBool::new(false),
@@ -276,7 +276,7 @@ impl TaskHandle {
             inner: Arc::new(NodeInfo {
                 node: id,
                 name: name.clone(),
-                span: error_span!(parent: None, "node", %id, name),
+                span: error_span!(parent: None, "node", id = %id.0, name),
             }),
             paused: AtomicBool::new(false),
             killed: AtomicBool::new(false),
