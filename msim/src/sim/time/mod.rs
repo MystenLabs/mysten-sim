@@ -419,7 +419,7 @@ define_sys_interceptor!(
 
         match clock_id {
             // used by SystemTime
-            libc::CLOCK_REALTIME | libc::CLOCK_REALTIME_COARSE => {
+            libc::CLOCK_REALTIME | libc::CLOCK_REALTIME_COARSE | libc::CLOCK_BOOTTIME => {
                 return bypass_clock_gettime(clock_id, ts);
                 /*
                  * See the TODO above re RocksDB
@@ -438,6 +438,11 @@ define_sys_interceptor!(
             libc::CLOCK_MONOTONIC | libc::CLOCK_MONOTONIC_RAW | libc::CLOCK_MONOTONIC_COARSE => {
                 // Instant is the same layout as timespec on linux
                 ts.write(std::mem::transmute(time.now_instant()));
+            }
+
+            // Used by rocksdb performance timers.
+            libc::CLOCK_PROCESS_CPUTIME_ID | libc::CLOCK_THREAD_CPUTIME_ID => {
+                return bypass_clock_gettime(clock_id, ts);
             }
 
             _ => panic!("unsupported clockid: {}", clock_id),
