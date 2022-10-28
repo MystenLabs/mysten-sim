@@ -22,7 +22,7 @@ use std::{
     time::Duration,
 };
 
-use tracing::{error_span, trace, Span};
+use tracing::{info_span, trace, Span};
 
 pub use tokio::msim_adapter::{join_error, runtime_task};
 pub use tokio::task::{yield_now, JoinError};
@@ -115,7 +115,7 @@ impl Executor {
             inner: Arc::new(NodeInfo {
                 node: NodeId(0),
                 name: "main".into(),
-                span: error_span!(parent: None, "node", id = 0, "main"),
+                span: info_span!(parent: None, "node", id = 0, "main"),
             }),
             paused: AtomicBool::new(false),
             killed: AtomicBool::new(false),
@@ -223,7 +223,7 @@ impl TaskHandle {
             inner: Arc::new(NodeInfo {
                 node: id,
                 name: node.info.name(),
-                span: error_span!(parent: None, "node", id = %id.0, name = &node.info.name()),
+                span: info_span!(parent: None, "node", id = %id.0, name = &node.info.name()),
             }),
             paused: AtomicBool::new(false),
             killed: AtomicBool::new(false),
@@ -276,7 +276,7 @@ impl TaskHandle {
             inner: Arc::new(NodeInfo {
                 node: id,
                 name: name.clone(),
-                span: error_span!(parent: None, "node", id = %id.0, name),
+                span: info_span!(parent: None, "node", id = %id.0, name),
             }),
             paused: AtomicBool::new(false),
             killed: AtomicBool::new(false),
