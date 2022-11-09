@@ -7,6 +7,7 @@ use super::{
 };
 use crate::assert_send_sync;
 use async_task::{FallibleTask, Runnable};
+use erasable::{ErasablePtr, ErasedPtr};
 use rand::Rng;
 use std::{
     collections::HashMap,
@@ -29,6 +30,7 @@ pub use tokio::msim_adapter::{join_error, runtime_task};
 pub use tokio::task::{yield_now, JoinError};
 
 pub mod join_set;
+pub use join_set::JoinSet;
 
 pub(crate) struct Executor {
     queue: mpsc::Receiver<(Runnable, Arc<TaskInfo>)>,
@@ -440,14 +442,11 @@ impl<T> InnerHandle<T> {
     fn new(task: Mutex<Option<FallibleTask<T>>>) -> Self {
         Self { task }
     }
-}
 
-trait Abortable {
-    fn abort(&self);
-    fn is_finished(&self) -> bool;
-}
-
-impl<T> Abortable for InnerHandle<T> {
+    // Important: Because InnerHandle is type erased and then un-erased with T = (),
+    // we can't call any on methods on FallibleTask that deal with T. The drop and is_finished
+    // methods only access the task header pointer, and don't depend on the type.
+    // TODO: this really needs support from async-task for abort handles.
     fn abort(&self) {
         self.task.lock().unwrap().take();
     }
@@ -469,7 +468,7 @@ pub struct JoinHandle<T> {
     inner: Arc<InnerHandle<T>>,
 }
 
-impl<T: 'static> JoinHandle<T> {
+impl<T> JoinHandle<T> {
     /// Abort the task associated with the handle.
     pub fn abort(&self) {
         self.inner.abort();
@@ -488,7 +487,7 @@ impl<T: 'static> JoinHandle<T> {
 
     /// Return an AbortHandle corresponding for the task.
     pub fn abort_handle(&self) -> AbortHandle {
-        let inner = self.inner.clone() as Arc<dyn Abortable>;
+        let inner = ErasablePtr::erase(Box::new(self.inner.clone()));
         let id = self.id.clone();
         AbortHandle { id, inner }
     }
@@ -524,18 +523,38 @@ impl<T> Drop for JoinHandle<T> {
 /// AbortHandle allows aborting, but not awaiting the return value.
 pub struct AbortHandle {
     id: runtime_task::Id,
-    inner: Arc<dyn Abortable>,
+    inner: ErasedPtr,
 }
+
+unsafe impl Send for AbortHandle {}
+unsafe impl Sync for AbortHandle {}
 
 impl AbortHandle {
     /// abort the task
     pub fn abort(&self) {
-        self.inner.abort();
+        let inner = self.inner();
+        inner.abort();
+        std::mem::forget(inner);
     }
 
     /// Check if the task associate with the handle is finished.
     pub fn is_finished(&self) -> bool {
-        self.inner.is_finished()
+        let inner = self.inner();
+        let ret = inner.is_finished();
+        std::mem::forget(inner);
+        ret
+    }
+
+    fn inner(&self) -> Box<Arc<InnerHandle<()>>> {
+        unsafe { ErasablePtr::unerase(self.inner) }
+    }
+}
+
+impl Drop for AbortHandle {
+    fn drop(&mut self) {
+        // must turn our erased pointer back into a Box and drop it.
+        let inner = self.inner();
+        std::mem::drop(inner);
     }
 }
 
@@ -802,7 +821,6 @@ mod tests {
             time::sleep(Duration::from_secs(5)).await;
 
             // test drop
-            let flag2 = flag.clone();
             join_set.spawn(async move {
                 time::sleep(Duration::from_secs(3)).await;
                 panic!();

@@ -42,6 +42,7 @@ tokio = { git = "https://github.com/mystenmark/tokio-madsim-fork.git", rev = "53
 tokio-util = { git = "https://github.com/mystenmark/tokio-madsim-fork.git", rev = "53fa543dd930cc5177783ff2b865e8ef1eab64e4", features = ["full"] }
 toml = "0.5"
 socket2 = "0.4"
+erasable = "1.2"
 
 # TODO: revert back to the crates-io version after https://github.com/smol-rs/async-task/pull/34 merges
 async-task = { git = "https://github.com/mystenmark/async-task", rev = "4e45b26e11126b191701b9b2ce5e2346b8d7682f" }
