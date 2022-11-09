@@ -790,30 +790,26 @@ mod tests {
 
         // test cancelling
         runtime.block_on(async move {
-            let flag = Arc::new(AtomicBool::new(false));
             let mut join_set = JoinSet::new();
 
             // test abort_all()
-            let flag1 = flag.clone();
             join_set.spawn(async move {
                 time::sleep(Duration::from_secs(3)).await;
-                flag1.store(true, Ordering::Relaxed);
+                panic!();
             });
             time::sleep(Duration::from_secs(1)).await;
             join_set.abort_all();
             time::sleep(Duration::from_secs(5)).await;
-            assert_eq!(flag.load(Ordering::Relaxed), false);
 
             // test drop
             let flag2 = flag.clone();
             join_set.spawn(async move {
                 time::sleep(Duration::from_secs(3)).await;
-                flag2.store(true, Ordering::Relaxed);
+                panic!();
             });
             time::sleep(Duration::from_secs(1)).await;
             std::mem::drop(join_set);
             time::sleep(Duration::from_secs(5)).await;
-            assert_eq!(flag.load(Ordering::Relaxed), false);
         });
 
         // test detach
