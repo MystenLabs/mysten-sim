@@ -30,6 +30,7 @@ pub use tokio::msim_adapter::{join_error, runtime_task};
 pub use tokio::task::{yield_now, JoinError};
 
 pub mod join_set;
+pub use join_set::JoinSet;
 
 pub(crate) struct Executor {
     queue: mpsc::Receiver<(Runnable, Arc<TaskInfo>)>,
@@ -524,6 +525,9 @@ pub struct AbortHandle {
     id: runtime_task::Id,
     inner: ErasedPtr,
 }
+
+unsafe impl Send for AbortHandle {}
+unsafe impl Sync for AbortHandle {}
 
 impl AbortHandle {
     /// abort the task
