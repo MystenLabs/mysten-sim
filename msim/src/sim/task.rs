@@ -13,6 +13,7 @@ use std::{
     fmt,
     future::Future,
     ops::Deref,
+    panic::{RefUnwindSafe, UnwindSafe},
     pin::Pin,
     sync::{
         atomic::{AtomicBool, AtomicU64, Ordering},
@@ -26,6 +27,8 @@ use tracing::{error_span, trace, Span};
 
 pub use tokio::msim_adapter::{join_error, runtime_task};
 pub use tokio::task::{yield_now, JoinError};
+
+pub mod join_set;
 
 pub(crate) struct Executor {
     queue: mpsc::Receiver<(Runnable, Arc<TaskInfo>)>,
@@ -357,7 +360,7 @@ impl TaskNodeHandle {
 
         JoinHandle {
             id: runtime_task::next_task_id(),
-            task: Mutex::new(Some(task.fallible())),
+            inner: Arc::new(InnerHandle::new(Mutex::new(Some(task.fallible())))),
         }
     }
 
@@ -428,21 +431,28 @@ where
     handle.spawn(async move { f() })
 }
 
-/// An owned permission to join on a task (await its termination).
 #[derive(Debug)]
-pub struct JoinHandle<T> {
-    id: runtime_task::Id,
+struct InnerHandle<T> {
     task: Mutex<Option<FallibleTask<T>>>,
 }
 
-impl<T> JoinHandle<T> {
-    /// Abort the task associated with the handle.
-    pub fn abort(&self) {
+impl<T> InnerHandle<T> {
+    fn new(task: Mutex<Option<FallibleTask<T>>>) -> Self {
+        Self { task }
+    }
+}
+
+trait Abortable {
+    fn abort(&self);
+    fn is_finished(&self) -> bool;
+}
+
+impl<T> Abortable for InnerHandle<T> {
+    fn abort(&self) {
         self.task.lock().unwrap().take();
     }
 
-    /// Check if the task associate with the handle is finished.
-    pub fn is_finished(&self) -> bool {
+    fn is_finished(&self) -> bool {
         self.task
             .lock()
             .unwrap()
@@ -450,11 +460,37 @@ impl<T> JoinHandle<T> {
             .map(|task| task.is_finished())
             .unwrap_or(true)
     }
+}
+
+/// An owned permission to join on a task (await its termination).
+#[derive(Debug)]
+pub struct JoinHandle<T> {
+    id: runtime_task::Id,
+    inner: Arc<InnerHandle<T>>,
+}
+
+impl<T: 'static> JoinHandle<T> {
+    /// Abort the task associated with the handle.
+    pub fn abort(&self) {
+        self.inner.abort();
+    }
+
+    /// Check if the task associate with the handle is finished.
+    pub fn is_finished(&self) -> bool {
+        self.inner.is_finished()
+    }
 
     /// Cancel the task when this handle is dropped.
     #[doc(hidden)]
     pub fn cancel_on_drop(self) -> FallibleTask<T> {
-        self.task.lock().unwrap().take().unwrap()
+        self.inner.task.lock().unwrap().take().unwrap()
+    }
+
+    /// Return an AbortHandle corresponding for the task.
+    pub fn abort_handle(&self) -> AbortHandle {
+        let inner = self.inner.clone() as Arc<dyn Abortable>;
+        let id = self.id.clone();
+        AbortHandle { id, inner }
     }
 }
 
@@ -465,20 +501,52 @@ impl<T> Future for JoinHandle<T> {
         self: std::pin::Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<Self::Output> {
-        std::pin::Pin::new(self.task.lock().unwrap().as_mut().unwrap())
-            .poll(cx)
-            .map(|res| {
-                // TODO: decide cancelled or panic
-                res.ok_or(join_error::cancelled(self.id.clone()))
-            })
+        let mut lock = self.inner.task.lock().unwrap();
+        let task = lock.as_mut();
+        if task.is_none() {
+            return std::task::Poll::Ready(Err(join_error::cancelled(self.id.clone())));
+        }
+        std::pin::Pin::new(task.unwrap()).poll(cx).map(|res| {
+            // TODO: decide cancelled or panic
+            res.ok_or(join_error::cancelled(self.id.clone()))
+        })
     }
 }
 
 impl<T> Drop for JoinHandle<T> {
     fn drop(&mut self) {
-        if let Some(task) = self.task.lock().unwrap().take() {
+        if let Some(task) = self.inner.task.lock().unwrap().take() {
             task.detach();
         }
+    }
+}
+
+/// AbortHandle allows aborting, but not awaiting the return value.
+pub struct AbortHandle {
+    id: runtime_task::Id,
+    inner: Arc<dyn Abortable>,
+}
+
+impl AbortHandle {
+    /// abort the task
+    pub fn abort(&self) {
+        self.inner.abort();
+    }
+
+    /// Check if the task associate with the handle is finished.
+    pub fn is_finished(&self) -> bool {
+        self.inner.is_finished()
+    }
+}
+
+impl UnwindSafe for AbortHandle {}
+impl RefUnwindSafe for AbortHandle {}
+
+impl fmt::Debug for AbortHandle {
+    fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt.debug_struct("AbortHandle")
+            .field("id", &self.id)
+            .finish()
     }
 }
 
@@ -489,6 +557,7 @@ mod tests {
         runtime::{Handle, NodeHandle, Runtime},
         time,
     };
+    use join_set::JoinSet;
     use std::{collections::HashSet, sync::atomic::AtomicUsize, time::Duration};
 
     #[test]
@@ -658,6 +727,105 @@ mod tests {
                 })
                 .await
                 .unwrap();
+        });
+    }
+
+    #[test]
+    fn test_abort() {
+        let runtime = Runtime::new();
+
+        fn panic_int() -> i32 {
+            panic!();
+        }
+
+        runtime.block_on(async move {
+            let jh = spawn(async move {
+                time::sleep(Duration::from_secs(5)).await;
+                panic_int()
+            });
+            time::sleep(Duration::from_secs(1)).await;
+            jh.abort();
+            jh.await.unwrap_err();
+        });
+
+        runtime.block_on(async move {
+            let jh = spawn(async move {
+                time::sleep(Duration::from_secs(5)).await;
+                panic_int()
+            });
+            time::sleep(Duration::from_secs(1)).await;
+            let ah = jh.abort_handle();
+            ah.abort();
+            jh.await.unwrap_err();
+        });
+    }
+
+    #[test]
+    fn test_joinset() {
+        let runtime = Runtime::new();
+
+        // test joining
+        runtime.block_on(async move {
+            let mut join_set = JoinSet::new();
+
+            join_set.spawn(async move {
+                time::sleep(Duration::from_secs(3)).await;
+                3
+            });
+            join_set.spawn(async move {
+                time::sleep(Duration::from_secs(2)).await;
+                2
+            });
+            join_set.spawn(async move {
+                time::sleep(Duration::from_secs(1)).await;
+                1
+            });
+
+            let mut res = Vec::new();
+            while let Some(next) = join_set.join_next().await {
+                res.push(next.unwrap());
+            }
+            assert_eq!(res, vec![1, 2, 3]);
+        });
+
+        // test cancelling
+        runtime.block_on(async move {
+            let mut join_set = JoinSet::new();
+
+            // test abort_all()
+            join_set.spawn(async move {
+                time::sleep(Duration::from_secs(3)).await;
+                panic!();
+            });
+            time::sleep(Duration::from_secs(1)).await;
+            join_set.abort_all();
+            time::sleep(Duration::from_secs(5)).await;
+
+            // test drop
+            let flag2 = flag.clone();
+            join_set.spawn(async move {
+                time::sleep(Duration::from_secs(3)).await;
+                panic!();
+            });
+            time::sleep(Duration::from_secs(1)).await;
+            std::mem::drop(join_set);
+            time::sleep(Duration::from_secs(5)).await;
+        });
+
+        // test detach
+        runtime.block_on(async move {
+            let flag = Arc::new(AtomicBool::new(false));
+            let mut join_set = JoinSet::new();
+
+            let flag1 = flag.clone();
+            join_set.spawn(async move {
+                time::sleep(Duration::from_secs(3)).await;
+                flag1.store(true, Ordering::Relaxed);
+            });
+            time::sleep(Duration::from_secs(1)).await;
+            join_set.detach_all();
+            time::sleep(Duration::from_secs(5)).await;
+            assert_eq!(flag.load(Ordering::Relaxed), true);
         });
     }
 }
