@@ -292,8 +292,17 @@ fn parse_test(mut input: syn::ItemFn, args: syn::AttributeArgs) -> Result<TokenS
                             if let Some(limit) = time_limit_s {
                                 rt.set_time_limit(::std::time::Duration::from_secs_f64(limit));
                             }
-                            let ret = rt.block_on(async #body);
-                            let log = rt.take_rand_log();
+                            let rt = std::sync::Arc::new(std::sync::RwLock::new(Some(rt)));
+                            let (stop_tx, stop_rx) = ::tokio::sync::oneshot::channel();
+                            let watchdog = #crate_ident::runtime::start_watchdog(rt.clone(), inner_seed, stop_rx);
+
+                            let rt_read = rt.read().unwrap();
+                            let ret = rt_read.as_ref().unwrap().block_on(async #body);
+                            let _ = stop_tx.send(());
+                            watchdog.join().unwrap();
+                            std::mem::drop(rt_read);
+
+                            let log = rt.write().unwrap().take().unwrap().take_rand_log();
                             (ret, log)
                         }).join();
                         match res {

@@ -262,7 +262,8 @@ impl ClockHandle {
 
     fn set_elapsed(&self, time: Duration) {
         let mut inner = self.inner.lock().unwrap();
-        inner.elapsed_time = time;
+        // prevent time from going backwards - otherwise this can happen when timers are late.
+        inner.elapsed_time = std::cmp::max(inner.elapsed_time, time);
     }
 
     fn elapsed(&self) -> Duration {
