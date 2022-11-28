@@ -38,8 +38,8 @@ ahash = "0.7"
 downcast-rs = "1.2"
 libc = "0.2"
 naive-timer = "0.2"
-tokio = { git = "https://github.com/mystenmark/tokio-madsim-fork.git", rev = "53fa543dd930cc5177783ff2b865e8ef1eab64e4", package = "real_tokio", features = ["full"] }
-tokio-util = { git = "https://github.com/mystenmark/tokio-madsim-fork.git", rev = "53fa543dd930cc5177783ff2b865e8ef1eab64e4", features = ["full"] }
+tokio = { git = "https://github.com/mystenmark/tokio-madsim-fork.git", rev = "bb463863b8155543731bdf7850057c083cf1b427", package = "real_tokio", features = ["full"] }
+tokio-util = { git = "https://github.com/mystenmark/tokio-madsim-fork.git", rev = "bb463863b8155543731bdf7850057c083cf1b427", features = ["full"] }
 toml = "0.5"
 socket2 = "0.4"
 erasable = "1.2"
@@ -50,7 +50,7 @@ async-task = { git = "https://github.com/mystenmark/async-task", rev = "4e45b26e
 [dev-dependencies]
 criterion = "0.3"
 structopt = "0.3"
-tokio = { git = "https://github.com/mystenmark/tokio-madsim-fork.git", rev = "53fa543dd930cc5177783ff2b865e8ef1eab64e4", package = "real_tokio", features = ["full"] }
+tokio = { git = "https://github.com/mystenmark/tokio-madsim-fork.git", rev = "bb463863b8155543731bdf7850057c083cf1b427", package = "real_tokio", features = ["full"] }
 
 [[bench]]
 name = "rpc"
