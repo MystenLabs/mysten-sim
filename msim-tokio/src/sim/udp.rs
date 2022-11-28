@@ -1,24 +1,27 @@
 use std::{
     io, net,
     net::{Ipv4Addr, Ipv6Addr, SocketAddr, ToSocketAddrs},
+    os::unix::io::{AsRawFd, FromRawFd, IntoRawFd, RawFd},
     sync::{Arc, Mutex},
     task::{Context, Poll},
 };
 
-use msim::net::Endpoint;
+use msim::net::{get_endpoint_from_socket, Endpoint};
 use real_tokio::io::{Interest, ReadBuf, Ready};
 
 use bytes::BufMut;
 
 #[derive(Debug)]
 pub struct UdpSocket {
+    fd: RawFd,
     ep: Arc<Endpoint>,
     default_dest: Mutex<Option<SocketAddr>>,
 }
 
 impl UdpSocket {
-    fn new(ep: Arc<Endpoint>) -> Self {
+    fn new(fd: RawFd, ep: Arc<Endpoint>) -> Self {
         Self {
+            fd,
             ep,
             default_dest: Mutex::new(None),
         }
@@ -45,16 +48,19 @@ impl UdpSocket {
     }
 
     fn bind_addr(addr: SocketAddr) -> io::Result<UdpSocket> {
-        let ep = Arc::new(Endpoint::bind_sync(addr)?);
-        Ok(Self::new(ep))
+        let udp_sock = net::UdpSocket::bind(addr)?;
+        Self::from_std(udp_sock)
     }
 
-    pub fn from_std(_socket: net::UdpSocket) -> io::Result<UdpSocket> {
-        unimplemented!("cannot create udp socket from net::UdpSocket")
+    pub fn from_std(socket: net::UdpSocket) -> io::Result<UdpSocket> {
+        let fd = socket.into_raw_fd();
+        let ep = get_endpoint_from_socket(fd)?;
+        Ok(Self::new(fd, ep))
     }
 
     pub fn into_std(self) -> io::Result<std::net::UdpSocket> {
-        unimplemented!("cannot unwrap udp socket into net::UdpSocket")
+        let Self { fd, .. } = self;
+        unsafe { Ok(net::UdpSocket::from_raw_fd(fd)) }
     }
 
     pub fn local_addr(&self) -> io::Result<SocketAddr> {
@@ -87,7 +93,7 @@ impl UdpSocket {
     }
 
     pub fn poll_send_ready(&self, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-        todo!()
+        Poll::Ready(Ok(()))
     }
 
     pub async fn send(&self, _buf: &[u8]) -> io::Result<usize> {
@@ -107,8 +113,16 @@ impl UdpSocket {
         Ok(())
     }
 
-    pub fn poll_recv_ready(&self, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-        todo!()
+    pub fn poll_recv_ready(&self, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        let port = self.ep.udp_tag();
+        match port {
+            Err(err) => Err(err).into(),
+            Ok(port) => match self.ep.recv_ready(Some(cx), port) {
+                Err(err) => Err(err).into(),
+                Ok(true) => Ok(()).into(),
+                Ok(false) => Poll::Pending,
+            },
+        }
     }
 
     pub async fn recv(&self, _buf: &mut [u8]) -> io::Result<usize> {
@@ -178,10 +192,24 @@ impl UdpSocket {
 
     pub fn try_io<R>(
         &self,
-        _interest: Interest,
-        _f: impl FnOnce() -> io::Result<R>,
+        interest: Interest,
+        f: impl FnOnce() -> io::Result<R>,
     ) -> io::Result<R> {
-        todo!()
+        let port = self.ep.udp_tag()?;
+        let ready = match interest {
+            Interest::READABLE => self.ep.recv_ready(None, port)?,
+            Interest::WRITABLE => true,
+            _ => unimplemented!("unhandled interest flag {:?}", interest),
+        };
+
+        if ready {
+            f()
+        } else {
+            Err(io::Error::new(
+                io::ErrorKind::WouldBlock,
+                "socket operation would block",
+            ))
+        }
     }
 
     pub async fn peek_from(&self, _buf: &mut [u8]) -> io::Result<(usize, SocketAddr)> {
@@ -254,6 +282,12 @@ impl UdpSocket {
 
     pub fn take_error(&self) -> io::Result<Option<io::Error>> {
         unimplemented!("not supported in simulator")
+    }
+}
+
+impl AsRawFd for UdpSocket {
+    fn as_raw_fd(&self) -> RawFd {
+        self.fd
     }
 }
 

@@ -1,6 +1,6 @@
 [package]
 name = "tokio"
-version = "1.21.2"
+version = "1.22.0"
 edition = "2021"
 authors = ["Runji Wang <wangrunji0408@163.com>", "Mysten Labs <build@mystenlabs.com>"]
 description = "The `tokio` simulator on msim."
@@ -63,7 +63,7 @@ msim = { version = "0.1.0", path = "../msim" }
 [dependencies]
 tracing = "0.1"
 
-real_tokio = { git = "https://github.com/mystenmark/tokio-madsim-fork.git", rev = "53fa543dd930cc5177783ff2b865e8ef1eab64e4", package = "real_tokio", features = ["full"] }
+real_tokio = { git = "https://github.com/mystenmark/tokio-madsim-fork.git", rev = "bb463863b8155543731bdf7850057c083cf1b427", package = "real_tokio", features = ["full"] }
 bytes = { version = "1.1" }
 futures = { version = "0.3.0", features = ["async-await"] }
 mio = { version = "0.8.1" }

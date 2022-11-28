@@ -26,7 +26,6 @@ pub(crate) struct Network {
 }
 
 /// Network for a node.
-#[derive(Default)]
 struct Node {
     /// IP address of the node.
     ///
@@ -43,6 +42,16 @@ struct Node {
     /// Instead of simulating time-wait behavior we just don't hand out the same port twice if we
     /// can help it.
     next_ephemeral_port: u16,
+}
+
+impl Default for Node {
+    fn default() -> Self {
+        Self {
+            ip: None,
+            sockets: HashMap::new(),
+            next_ephemeral_port: 0x8000,
+        }
+    }
 }
 
 /// Network statistics.
@@ -165,6 +174,7 @@ impl Network {
                     io::Error::new(io::ErrorKind::AddrInUse, "no available ephemeral port")
                 })?;
             node.next_ephemeral_port = port.wrapping_add(1);
+            trace!("assigned ephemeral port {}", port);
             addr.set_port(port);
         }
         // insert socket
@@ -288,7 +298,7 @@ impl Network {
 
     pub fn recv_ready(
         &self,
-        cx: &mut Context<'_>,
+        cx: Option<&mut Context<'_>>,
         node: NodeId,
         dst: SocketAddr,
         tag: u64,
@@ -353,9 +363,9 @@ impl Mailbox {
         self.msgs.push(msg.unwrap());
     }
 
-    fn recv_ready(&mut self, cx: &mut Context<'_>, tag: u64) -> bool {
+    fn recv_ready(&mut self, cx: Option<&mut Context<'_>>, tag: u64) -> bool {
         let ready = self.msgs.iter().any(|msg| tag == msg.tag);
-        if !ready {
+        if let (false, Some(cx)) = (ready, cx) {
             self.wakers.push((tag, cx.waker().clone()));
         }
         ready

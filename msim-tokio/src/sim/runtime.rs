@@ -112,8 +112,12 @@ impl Runtime {
 
     // unclear what supporting these would entail - simulator tests don't create their own
     // runtimes except at the top level, so we don't need support for it.
-    pub fn shutdown_timeout(self, timeout: Duration) { unimplemented!() }
-    pub fn shutdown_background(self) { unimplemented!() }
+    pub fn shutdown_timeout(self, _timeout: Duration) {
+        unimplemented!()
+    }
+    pub fn shutdown_background(self) {
+        unimplemented!()
+    }
 }
 
 impl Drop for Runtime {
