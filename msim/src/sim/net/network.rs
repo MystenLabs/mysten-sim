@@ -298,7 +298,7 @@ impl Network {
 
     pub fn recv_ready(
         &self,
-        cx: &mut Context<'_>,
+        cx: Option<&mut Context<'_>>,
         node: NodeId,
         dst: SocketAddr,
         tag: u64,
@@ -363,9 +363,9 @@ impl Mailbox {
         self.msgs.push(msg.unwrap());
     }
 
-    fn recv_ready(&mut self, cx: &mut Context<'_>, tag: u64) -> bool {
+    fn recv_ready(&mut self, cx: Option<&mut Context<'_>>, tag: u64) -> bool {
         let ready = self.msgs.iter().any(|msg| tag == msg.tag);
-        if !ready {
+        if let (false, Some(cx)) = (ready, cx) {
             self.wakers.push((tag, cx.waker().clone()));
         }
         ready

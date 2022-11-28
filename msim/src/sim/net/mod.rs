@@ -884,12 +884,14 @@ impl Endpoint {
         let node = plugin::node();
         let addr = addr.to_socket_addrs()?.next().unwrap();
         let addr = net.network.lock().unwrap().bind(node, addr)?;
-        Ok(Endpoint {
+        let ep = Endpoint {
             net,
             node,
             addr,
             peer: None,
-        })
+        };
+        trace!("Endpoint::bind_sync() -> {:?}", ep);
+        Ok(ep)
     }
 
     /// return the tag used to send to this endpooint, for udp connections only.
@@ -1113,7 +1115,7 @@ impl Endpoint {
 
     /// Check if there is a message waiting that can be received without blocking.
     /// If not, schedule a wakeup using the context.
-    pub fn recv_ready(&self, cx: &mut Context<'_>, tag: u64) -> io::Result<bool> {
+    pub fn recv_ready(&self, cx: Option<&mut Context<'_>>, tag: u64) -> io::Result<bool> {
         Ok(self
             .net
             .network
