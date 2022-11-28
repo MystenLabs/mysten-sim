@@ -26,7 +26,6 @@ pub(crate) struct Network {
 }
 
 /// Network for a node.
-#[derive(Default)]
 struct Node {
     /// IP address of the node.
     ///
@@ -43,6 +42,16 @@ struct Node {
     /// Instead of simulating time-wait behavior we just don't hand out the same port twice if we
     /// can help it.
     next_ephemeral_port: u16,
+}
+
+impl Default for Node {
+    fn default() -> Self {
+        Self {
+            ip: None,
+            sockets: HashMap::new(),
+            next_ephemeral_port: 0x8000,
+        }
+    }
 }
 
 /// Network statistics.
@@ -165,6 +174,7 @@ impl Network {
                     io::Error::new(io::ErrorKind::AddrInUse, "no available ephemeral port")
                 })?;
             node.next_ephemeral_port = port.wrapping_add(1);
+            trace!("assigned ephemeral port {}", port);
             addr.set_port(port);
         }
         // insert socket
