@@ -11,12 +11,14 @@ use std::{
     collections::HashMap,
     fmt,
     future::Future,
+    io::Write,
     net::IpAddr,
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, RwLock},
     time::Duration,
 };
+use tokio::sync::oneshot;
 
-use tracing::warn;
+use tracing::{debug, error, warn};
 
 pub(crate) mod context;
 
@@ -196,6 +198,74 @@ impl Runtime {
     }
 }
 
+/// Start a watch dog thread that will kill the test process in case of a deadlock.
+pub fn start_watchdog(
+    rt: Arc<RwLock<Option<Runtime>>>,
+    inner_seed: u64,
+    stop: oneshot::Receiver<()>,
+) -> std::thread::JoinHandle<()> {
+    start_watchdog_with(rt, stop, move || {
+        error!("deadlock detected, aborting()");
+        println!(
+            "note: run with `MSIM_TEST_SEED={}` environment variable to reproduce this error",
+            inner_seed
+        );
+        let _ = std::io::stdout().flush();
+        std::process::abort();
+    })
+}
+
+fn start_watchdog_with(
+    rt: Arc<RwLock<Option<Runtime>>>,
+    mut stop: oneshot::Receiver<()>,
+    on_deadlock: impl FnOnce() + Send + 'static,
+) -> std::thread::JoinHandle<()> {
+    std::thread::spawn(move || {
+        if std::env::var("MSIM_DISABLE_WATCHDOG").is_ok() {
+            warn!("simulator watchdog thread disabled due to MSIM_DISABLE_WATCHDOG");
+            stop.blocking_recv().expect("watchdog stop tx was dropped");
+            return;
+        }
+
+        debug!(tid = ?std::thread::current().id(),
+            "watchdog thread starting. to disable set MSIM_DISABLE_WATCHDOG=1");
+        let read = rt.read().unwrap();
+        let rt = &(*read).as_ref().unwrap();
+        let mut prev_time = rt.handle.time.now_instant();
+        let mut deadlock_count = 0;
+        loop {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            if stop.try_recv().is_ok() {
+                break;
+            }
+
+            let now = rt.handle.time.now_instant();
+            if now < prev_time {
+                eprintln!("clock went backwards! {:?} {:?}", now, prev_time);
+                let _ = std::io::stdout().flush();
+                std::process::abort();
+            }
+            if now == prev_time {
+                warn!("possible deadlock detected...");
+                deadlock_count += 1;
+            } else if deadlock_count > 0 {
+                warn!("deadlock cleared (perhaps the process was paused)...");
+                deadlock_count = 0;
+            }
+            prev_time = now;
+
+            // we wait until we've seen the clock not advance 10 times in a
+            // row, so that we don't get spurious panics when the process is
+            // paused in a debugger.
+            if deadlock_count > 10 {
+                on_deadlock();
+                return;
+            }
+        }
+        debug!(tid = ?std::thread::current().id(), "watchdog thread exiting");
+    })
+}
+
 /// Supervisor handle to the runtime.
 #[derive(Clone)]
 pub struct Handle {
@@ -267,6 +337,11 @@ impl Handle {
     /// Mark this Handle as the currently active one
     pub fn enter(self) -> EnterGuard {
         EnterGuard(context::enter(self))
+    }
+
+    /// Get the TimeHandle
+    pub fn time(&self) -> &time::TimeHandle {
+        &self.time
     }
 }
 
@@ -428,4 +503,50 @@ pub fn init_logger() {
     use std::sync::Once;
     static LOGGER_INIT: Once = Once::new();
     LOGGER_INIT.call_once(tracing_subscriber::fmt::init);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{init_logger, start_watchdog_with};
+    use crate::task::spawn;
+    use crate::{runtime::Runtime, time};
+    use std::{
+        sync::{Arc, RwLock},
+        time::Duration,
+    };
+    use tokio::select;
+    use tokio::sync::oneshot::channel;
+    use tracing::{error, info};
+
+    #[test]
+    fn test_watchdog() {
+        init_logger();
+        let runtime = Arc::new(RwLock::new(Some(Runtime::new())));
+        let (_tx, rx) = channel();
+
+        let (deadlock_tx, deadlock_rx) = channel();
+        let _watchdog = start_watchdog_with(runtime.clone(), rx, move || {
+            error!("deadlock detected");
+            deadlock_tx.send(()).expect("cancel_rx dropped");
+        });
+
+        let now = std::time::Instant::now();
+        std::thread::spawn(move || {
+            let runtime = runtime.read().unwrap();
+
+            runtime.as_ref().unwrap().block_on(async {
+                std::thread::sleep(Duration::from_millis(800));
+                // briefly come back to life to exercise the timer reset.
+                time::sleep(Duration::from_secs(1)).await;
+
+                std::thread::sleep(Duration::from_millis(5000));
+                panic!("thread sleep finished without watchdog noticing");
+            });
+        });
+
+        deadlock_rx.blocking_recv().expect("cancel_tx dropped");
+        info!("deadlock detected successfully");
+        // verify that the deadline was reset after we came back after the timer reset
+        assert!(now.elapsed() > Duration::from_millis(1500));
+    }
 }
