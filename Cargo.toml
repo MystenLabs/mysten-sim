@@ -3,6 +3,7 @@ members = [
     "msim",
     "msim-macros",
     "msim-tokio",
+    "mocked-crates/futures_timer",
 ]
 exclude = [
     "tokio",
