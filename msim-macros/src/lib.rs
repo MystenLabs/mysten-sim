@@ -246,6 +246,14 @@ fn parse_test(mut input: syn::ItemFn, args: syn::AttributeArgs) -> Result<TokenS
                 count = count.max(2);
             }
 
+            let watchdog_timeout = ::std::time::Duration::from_millis(
+                ::std::env::var("MSIM_WATCHDOG_TIMEOUT_MS")
+                .ok()
+                .map(|num_str| {
+                    num_str.parse::<u64>().expect("MSIM_WATCHDOG_TIMEOUT_MS should be a number")
+                }).unwrap_or(5000)
+            );
+
             fn next_seed(seed: u64) -> u64 {
                 use rand::Rng;
                 #crate_ident::rand::GlobalRng::new_with_seed(seed).gen::<u64>()
@@ -294,7 +302,9 @@ fn parse_test(mut input: syn::ItemFn, args: syn::AttributeArgs) -> Result<TokenS
                             }
                             let rt = std::sync::Arc::new(std::sync::RwLock::new(Some(rt)));
                             let (stop_tx, stop_rx) = ::tokio::sync::oneshot::channel();
-                            let watchdog = #crate_ident::runtime::start_watchdog(rt.clone(), inner_seed, stop_rx);
+                            let watchdog = #crate_ident::runtime::start_watchdog(
+                                rt.clone(), inner_seed, watchdog_timeout, stop_rx
+                            );
 
                             let rt_read = rt.read().unwrap();
                             let ret = rt_read.as_ref().unwrap().block_on(async #body);
