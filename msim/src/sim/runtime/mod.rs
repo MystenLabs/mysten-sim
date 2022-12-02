@@ -202,9 +202,10 @@ impl Runtime {
 pub fn start_watchdog(
     rt: Arc<RwLock<Option<Runtime>>>,
     inner_seed: u64,
+    timeout: Duration,
     stop: oneshot::Receiver<()>,
 ) -> std::thread::JoinHandle<()> {
-    start_watchdog_with(rt, stop, move || {
+    start_watchdog_with(rt, timeout, stop, move || {
         error!("deadlock detected, aborting()");
         println!(
             "note: run with `MSIM_TEST_SEED={}` environment variable to reproduce this error",
@@ -217,9 +218,13 @@ pub fn start_watchdog(
 
 fn start_watchdog_with(
     rt: Arc<RwLock<Option<Runtime>>>,
+    timeout: Duration,
     mut stop: oneshot::Receiver<()>,
     on_deadlock: impl FnOnce() + Send + 'static,
 ) -> std::thread::JoinHandle<()> {
+    let limit = 10;
+    let step = timeout / limit;
+
     std::thread::spawn(move || {
         if std::env::var("MSIM_DISABLE_WATCHDOG").is_ok() {
             warn!("simulator watchdog thread disabled due to MSIM_DISABLE_WATCHDOG");
@@ -234,7 +239,7 @@ fn start_watchdog_with(
         let mut prev_time = rt.handle.time.now_instant();
         let mut deadlock_count = 0;
         loop {
-            std::thread::sleep(std::time::Duration::from_millis(100));
+            std::thread::sleep(step);
             if stop.try_recv().is_ok() {
                 break;
             }
@@ -257,7 +262,7 @@ fn start_watchdog_with(
             // we wait until we've seen the clock not advance 10 times in a
             // row, so that we don't get spurious panics when the process is
             // paused in a debugger.
-            if deadlock_count > 10 {
+            if deadlock_count > limit {
                 on_deadlock();
                 return;
             }
@@ -508,13 +513,11 @@ pub fn init_logger() {
 #[cfg(test)]
 mod tests {
     use super::{init_logger, start_watchdog_with};
-    use crate::task::spawn;
     use crate::{runtime::Runtime, time};
     use std::{
         sync::{Arc, RwLock},
         time::Duration,
     };
-    use tokio::select;
     use tokio::sync::oneshot::channel;
     use tracing::{error, info};
 
@@ -525,10 +528,11 @@ mod tests {
         let (_tx, rx) = channel();
 
         let (deadlock_tx, deadlock_rx) = channel();
-        let _watchdog = start_watchdog_with(runtime.clone(), rx, move || {
-            error!("deadlock detected");
-            deadlock_tx.send(()).expect("cancel_rx dropped");
-        });
+        let _watchdog =
+            start_watchdog_with(runtime.clone(), Duration::from_secs(1), rx, move || {
+                error!("deadlock detected");
+                deadlock_tx.send(()).expect("cancel_rx dropped");
+            });
 
         let now = std::time::Instant::now();
         std::thread::spawn(move || {
