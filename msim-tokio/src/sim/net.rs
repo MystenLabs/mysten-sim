@@ -16,7 +16,9 @@ use std::{
 
 pub use std::net::ToSocketAddrs;
 
-use msim::net::{network::Payload, Endpoint};
+use msim::net::{
+    get_endpoint_from_socket, network::Payload, try_get_endpoint_from_socket, Endpoint,
+};
 
 use real_tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 
@@ -28,6 +30,7 @@ use crate::poller::Poller;
 
 /// Provide the tokio::net::TcpListener interface.
 pub struct TcpListener {
+    fd: RawFd,
     ep: Arc<Endpoint>,
     poller: Poller<io::Result<(TcpStream, SocketAddr)>>,
 }
@@ -35,6 +38,7 @@ pub struct TcpListener {
 impl std::fmt::Debug for TcpListener {
     fn fmt(&self, fmt: &mut std::fmt::Formatter) -> Result<(), std::fmt::Error> {
         fmt.debug_struct("TcpListener")
+            .field("fd", &self.fd)
             .field("ep", &self.ep)
             .finish()
     }
@@ -64,14 +68,8 @@ impl TcpListener {
     }
 
     async fn bind_addr(addr: SocketAddr) -> io::Result<Self> {
-        Self::bind_endpoint(Arc::new(Endpoint::bind(addr).await?))
-    }
-
-    fn bind_endpoint(ep: Arc<Endpoint>) -> io::Result<Self> {
-        Ok(Self {
-            ep,
-            poller: Poller::new(),
-        })
+        let tcp_sock = std::net::TcpListener::bind(addr)?;
+        Self::from_std(tcp_sock)
     }
 
     /// poll_accept
@@ -114,12 +112,19 @@ impl TcpListener {
         Ok((stream, from))
     }
 
-    pub fn from_std(_listener: std::net::TcpListener) -> io::Result<TcpListener> {
-        unimplemented!("from_std not supported in simulator")
+    pub fn from_std(listener: std::net::TcpListener) -> io::Result<TcpListener> {
+        let fd = listener.as_raw_fd();
+        let ep = get_endpoint_from_socket(fd)?;
+        Ok(Self {
+            fd,
+            ep,
+            poller: Poller::new(),
+        })
     }
 
     pub fn into_std(self) -> io::Result<std::net::TcpListener> {
-        unimplemented!("into_std not supported in simulator")
+        let Self { fd, .. } = self;
+        unsafe { Ok(std::net::TcpListener::from_raw_fd(fd)) }
     }
 
     pub fn local_addr(&self) -> io::Result<SocketAddr> {
@@ -267,17 +272,25 @@ impl TcpState {
     }
 
     fn next_recv_tag(&self) -> u64 {
-        let seq = self.recv_seq.fetch_add(1, Ordering::SeqCst) as u64;
+        let seq = self.recv_seq.load(Ordering::SeqCst) as u64;
         let tcp_id = self.local_tcp_id as u64;
         (tcp_id << 32) | seq
+    }
+
+    fn increment_recv_tag(&self) {
+        self.recv_seq.fetch_add(1, Ordering::SeqCst);
+    }
+
+    fn get_next_recv_tag_and_inc(&self) -> u64 {
+        let ret = self.next_recv_tag();
+        self.increment_recv_tag();
+        ret
     }
 }
 
 /// Provide the tokio::net::TcpStream interface.
 pub struct TcpStream {
     state: Arc<TcpState>,
-    read_poller: Poller<io::Result<Buffer>>,
-    write_poller: Poller<io::Result<usize>>,
     buffer: Mutex<Buffer>,
 }
 
@@ -294,8 +307,6 @@ impl TcpStream {
     fn new(state: TcpState) -> Self {
         Self {
             state: Arc::new(state),
-            read_poller: Poller::new(),
-            write_poller: Poller::new(),
             buffer: Mutex::new(Buffer::new()),
         }
     }
@@ -335,7 +346,10 @@ impl TcpStream {
             local_tcp_id
         );
 
-        let (msg, from) = state.ep.recv_from_raw(state.next_recv_tag()).await?;
+        let (msg, from) = state
+            .ep
+            .recv_from_raw(state.get_next_recv_tag_and_inc())
+            .await?;
         debug_assert_eq!(from, remote_sock);
         // finish initializing state
         state.remote_tcp_id = Message::new(msg).unwrap_tcp_id();
@@ -355,35 +369,21 @@ impl TcpStream {
         self.state.ep.local_addr()
     }
 
-    async fn read(state: Arc<TcpState>) -> io::Result<Buffer> {
-        let tag = state.next_recv_tag();
-
-        let (payload, from) = state.ep.recv_from_raw(tag).await?;
-        debug_assert_eq!(from, state.remote_sock);
-
-        let (seq, payload) = Message::new(payload).unwrap_payload();
-        debug_assert_eq!(seq as u64, tag & 0xffffffff);
-        Ok(Buffer::new_from_vec(payload))
-    }
-
-    async fn write(state: Arc<TcpState>, buf: Vec<u8>) -> io::Result<usize> {
-        let num = buf.len();
-        let tag = state.next_send_tag();
-        let seq = (tag & 0xffffffff) as u32;
-        state
-            .ep
-            .send_to_raw(state.remote_sock, tag, Message::payload(seq, buf))
-            .await?;
-        Ok(num)
-    }
-
     pub fn into_split(self) -> (OwnedReadHalf, OwnedWriteHalf) {
         split_owned(self)
     }
 
-    fn poll_write_priv(&self, cx: &mut Context<'_>, buf: &[u8]) -> Poll<io::Result<usize>> {
-        self.write_poller
-            .poll_with_fut(cx, || Self::write(self.state.clone(), buf.to_vec()))
+    fn poll_write_priv(&self, _cx: &mut Context<'_>, buf: &[u8]) -> Poll<io::Result<usize>> {
+        trace!(addr = ?self.state.ep.local_addr(), "write: {}", String::from_utf8_lossy(&buf));
+        let num = buf.len();
+        let tag = self.state.next_send_tag();
+        let seq = (tag & 0xffffffff) as u32;
+        self.state.ep.send_to_raw_sync(
+            self.state.remote_sock,
+            tag,
+            Message::payload(seq, buf.to_vec()),
+        );
+        Poll::Ready(Ok(num))
     }
 
     fn poll_read_priv(
@@ -403,19 +403,27 @@ impl TcpStream {
             return Poll::Ready(Ok(num_bytes));
         }
 
-        let poll = self
-            .read_poller
-            .poll_with_fut(cx, || Self::read(self.state.clone()));
+        let tag = self.state.next_recv_tag();
 
-        match poll {
-            Poll::Ready(Ok(mut buf)) => {
-                // fill read with whatever we can, and save remainder for later.
+        match self.state.ep.recv_ready(Some(cx), tag) {
+            Err(err) => Err(err).into(),
+            Ok(false) => Poll::Pending,
+            Ok(true) => {
+                let (payload, from) = match self.state.ep.recv_from_raw_sync(tag) {
+                    Err(err) => return Poll::Ready(Err(err)),
+                    Ok(r) => r,
+                };
+                self.state.increment_recv_tag();
+                debug_assert_eq!(from, self.state.remote_sock);
+
+                let (seq, payload) = Message::new(payload).unwrap_payload();
+                trace!(addr = ?self.state.ep.local_addr(), "read: {}", String::from_utf8_lossy(&payload));
+                debug_assert_eq!(seq as u64, tag & 0xffffffff);
+                let mut buf = Buffer::new_from_vec(payload);
                 let num_bytes = buf.read(is_poll, read);
                 buffer.write(buf);
                 Poll::Ready(Ok(num_bytes))
             }
-            Poll::Ready(Err(e)) => Poll::Ready(Err(e)),
-            Poll::Pending => Poll::Pending,
         }
     }
 
@@ -573,23 +581,19 @@ fn split_owned(stream: TcpStream) -> (OwnedReadHalf, OwnedWriteHalf) {
 }
 
 pub struct TcpSocket {
-    bind_addr: Mutex<Option<Endpoint>>,
+    fd: RawFd,
+    bind_addr: Mutex<Option<Arc<Endpoint>>>,
 }
 
 impl TcpSocket {
     // TODO: simulate v4/v6?
     pub fn new_v4() -> io::Result<TcpSocket> {
-        TcpSocket::new()
+        let tcp_sock = real_tokio::net::TcpSocket::new_v4()?;
+        Ok(unsafe { Self::from_raw_fd(tcp_sock.into_raw_fd()) })
     }
 
     pub fn new_v6() -> io::Result<TcpSocket> {
-        TcpSocket::new()
-    }
-
-    fn new() -> io::Result<TcpSocket> {
-        Ok(TcpSocket {
-            bind_addr: Mutex::new(None),
-        })
+        unimplemented!("ipv6 not supported in simulator");
     }
 
     pub fn set_reuseaddr(&self, _reuseaddr: bool) -> io::Result<()> {
@@ -647,7 +651,7 @@ impl TcpSocket {
 
     pub fn bind(&self, addr: SocketAddr) -> io::Result<()> {
         let ep = Endpoint::bind_sync(addr)?;
-        *self.bind_addr.lock().unwrap() = Some(ep);
+        *self.bind_addr.lock().unwrap() = Some(ep.into());
         Ok(())
     }
 
@@ -655,11 +659,10 @@ impl TcpSocket {
         TcpStream::connect(addr).await
     }
 
-    pub fn listen(self, _backlog: u32) -> io::Result<TcpListener> {
-        let ep = Arc::new(self.bind_addr.into_inner().unwrap().ok_or_else(|| {
-            io::Error::new(io::ErrorKind::NotConnected, "socket is not connected")
-        })?);
-        TcpListener::bind_endpoint(ep)
+    pub fn listen(self, backlog: u32) -> io::Result<TcpListener> {
+        let sock = unsafe { real_tokio::net::TcpSocket::from_raw_fd(self.into_raw_fd()) };
+        let listener = sock.listen(backlog)?;
+        TcpListener::from_std(listener.into_std()?)
     }
 
     pub fn from_std_stream(_std_stream: std::net::TcpStream) -> TcpSocket {
@@ -669,22 +672,29 @@ impl TcpSocket {
 
 impl AsRawFd for TcpSocket {
     fn as_raw_fd(&self) -> RawFd {
-        unimplemented!("as_raw_fd not supported in simulator")
+        self.fd
     }
 }
 
 impl FromRawFd for TcpSocket {
-    unsafe fn from_raw_fd(_fd: RawFd) -> TcpSocket {
-        unimplemented!("from_raw_fd not supported in simulator")
+    unsafe fn from_raw_fd(fd: RawFd) -> TcpSocket {
+        let ep = try_get_endpoint_from_socket(fd).expect("socket does not exist");
+        TcpSocket {
+            fd,
+            bind_addr: Mutex::new(ep),
+        }
     }
 }
 
 impl IntoRawFd for TcpSocket {
     fn into_raw_fd(self) -> RawFd {
-        unimplemented!("into_raw_fd not supported in simulator")
+        self.fd
     }
 }
 
+// To support conversion between TcpStream <-> RawFd we will need to lower the TcpState
+// and reading/writing operations to the net interceptor library - otherwise we can't track any
+// reads/writes that occur while the stream is being manipulated as a raw fd.
 impl AsRawFd for TcpStream {
     fn as_raw_fd(&self) -> RawFd {
         unimplemented!("as_raw_fd not supported in simulator")
