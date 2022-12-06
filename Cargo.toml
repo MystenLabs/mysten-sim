@@ -3,8 +3,9 @@ members = [
     "msim",
     "msim-macros",
     "msim-tokio",
-    "mocked-crates/futures_timer",
+    "mocked-crates/futures-timer",
 ]
 exclude = [
     "tokio",
+    "test-crates/jsonrpsee-test",
 ]

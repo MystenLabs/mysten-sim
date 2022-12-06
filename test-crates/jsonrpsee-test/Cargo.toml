@@ -1,0 +1,20 @@
+[package]
+name = "jsonrpsee-test"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+anyhow = "1"
+tokio = "1"
+jsonrpsee = { version = "0.16.1", features = ["server", "macros", "http-client", "ws-client", "wasm-client", "client-ws-transport", "client-web-transport", "client-core"] }
+jsonrpsee-core = "0.16.1"
+msim = { path = "../../msim" }
+msim-macros = { path = "../../msim-macros" }
+
+
+[patch.crates-io]
+tokio = { path = "../../msim-tokio" }
+futures-timer = { path = "../../mocked-crates/futures-timer" }
+
