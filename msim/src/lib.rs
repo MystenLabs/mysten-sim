@@ -12,6 +12,8 @@
 #[cfg_attr(docsrs, doc(cfg(all(feature = "rpc", feature = "macros"))))]
 pub use msim_macros::{service, Request};
 
+pub use tracing;
+
 #[cfg(msim)]
 mod sim;
 #[cfg(msim)]

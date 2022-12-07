@@ -20,6 +20,7 @@
 //!
 //! [`rand`]: rand
 
+pub use rand;
 use rand::{
     distributions::Standard,
     prelude::{Distribution, SmallRng},

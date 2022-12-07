@@ -202,7 +202,7 @@ fn parse_test(mut input: syn::ItemFn, args: syn::AttributeArgs) -> Result<TokenS
                     .ip(ip)
                     .name("client")
                     .init(|| async {
-                        ::tracing::info!("client restarted");
+                        #crate_ident::tracing::info!("client restarted");
                     })
                     .build();
 
@@ -255,7 +255,7 @@ fn parse_test(mut input: syn::ItemFn, args: syn::AttributeArgs) -> Result<TokenS
             );
 
             fn next_seed(seed: u64) -> u64 {
-                use rand::Rng;
+                use #crate_ident::rand::Rng;
                 #crate_ident::rand::GlobalRng::new_with_seed(seed).gen::<u64>()
             }
 

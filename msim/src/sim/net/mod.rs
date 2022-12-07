@@ -84,6 +84,15 @@ impl Drop for FileDes {
     }
 }
 
+// Allocate a new file descriptor - it will never be used. We don't want to allocate fds
+// ourselves because the program may allocate an fd from some other means (like open())
+// which could collide with any descriptor we choose.
+fn alloc_fd() -> libc::c_int {
+    let fd = unsafe { libc::dup(0) };
+    debug!("allocated fd {}", fd);
+    fd
+}
+
 #[derive(Debug)]
 struct SocketState {
     ty: libc::c_int,
@@ -134,9 +143,14 @@ impl HostNetworkState {
     }
 }
 
+/// Get the Endpoint of a socket, if it is bound.
+pub fn try_get_endpoint_from_socket(fd: libc::c_int) -> io::Result<Option<Arc<Endpoint>>> {
+    HostNetworkState::with_socket(fd, |socket| socket.endpoint.as_ref().map(|ep| ep.clone()))
+}
+
 /// Get the Endpoint of a bound socket.
 pub fn get_endpoint_from_socket(fd: libc::c_int) -> io::Result<Arc<Endpoint>> {
-    HostNetworkState::with_socket(fd, |socket| socket.endpoint.as_ref().map(|ep| ep.clone()))?
+    try_get_endpoint_from_socket(fd)?
         .ok_or_else(|| io::Error::new(io::ErrorKind::NotConnected, "socket has not been bound"))
 }
 
@@ -288,7 +302,7 @@ unsafe fn accept_impl(
     let endpoint = Endpoint::connect_sync(remote_addr)
         .expect("connection failure should already have been detected");
 
-    let fd = libc::dup(0);
+    let fd = alloc_fd();
     let socket = SocketState {
         ty: libc::SOCK_STREAM,
         _placeholder_file: FileDes(fd),
@@ -378,7 +392,8 @@ define_sys_interceptor!(
 );
 
 define_sys_interceptor!(
-    fn socket(domain: libc::c_int, ty: libc::c_int, protocol: libc::c_int) -> libc::c_int {
+    fn socket(domain: libc::c_int, ty: libc::c_int, proto: libc::c_int) -> libc::c_int {
+        trace!("socket({}, {}, {})", domain, ty, proto);
         // mask off SOCK_CLOEXEC, SOCK_NONBLOCKING.
         let ty = ty & 0xf;
 
@@ -393,14 +408,7 @@ define_sys_interceptor!(
             ty
         );
 
-        if protocol != 0 {
-            warn!("socket(): non-zero protocol ignored - application intent may not be respected");
-        }
-
-        // Allocate a new file descriptor - it will never be used. We don't want to allocate fds
-        // ourselves because the program may allocate an fd from some other means (like open())
-        // which could collide with any descriptor we choose.
-        let fd = libc::dup(0);
+        let fd = alloc_fd();
 
         let socket = SocketState {
             ty,
@@ -479,6 +487,10 @@ define_sys_interceptor!(
             (libc::SOL_UDP, libc::UDP_GRO) => -1,
             #[cfg(target_os = "linux")]
             (libc::SOL_UDP, libc::UDP_SEGMENT) => -1,
+
+            // we don't emulate keepalive, but we allow it to be set.
+            (libc::SOL_SOCKET, libc::SO_KEEPALIVE) => 0,
+            (libc::IPPROTO_TCP, libc::TCP_KEEPALIVE) => 0,
 
             _ => {
                 warn!("unhandled socket option {} {}", level, name);
