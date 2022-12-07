@@ -490,6 +490,8 @@ define_sys_interceptor!(
 
             // we don't emulate keepalive, but we allow it to be set.
             (libc::SOL_SOCKET, libc::SO_KEEPALIVE) => 0,
+
+            #[cfg(target_os = "macos")]
             (libc::IPPROTO_TCP, libc::TCP_KEEPALIVE) => 0,
 
             _ => {
