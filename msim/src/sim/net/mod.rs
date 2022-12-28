@@ -39,6 +39,7 @@ use std::{
     collections::{hash_map::Entry, HashMap},
     io,
     net::{IpAddr, Ipv4Addr, SocketAddr, ToSocketAddrs},
+    os::unix::io::{AsRawFd, RawFd},
     sync::{Arc, Mutex},
     task::Context,
 };
@@ -74,12 +75,45 @@ pub struct NetSim {
 }
 
 #[derive(Debug)]
-struct FileDes(libc::c_int);
+struct PlaceholderFileDes(libc::c_int);
 
-impl Drop for FileDes {
+impl Drop for PlaceholderFileDes {
     fn drop(&mut self) {
         unsafe {
             assert_eq!(bypass_close(self.0), 0);
+        }
+    }
+}
+
+/// An owned file descriptor
+#[derive(Debug)]
+pub struct OwnedFd(RawFd);
+
+impl OwnedFd {
+    /// Return the RawFd without closing it.
+    pub fn release(self) -> RawFd {
+        let ret = self.0;
+        std::mem::forget(self);
+        ret
+    }
+}
+
+impl AsRawFd for OwnedFd {
+    fn as_raw_fd(&self) -> RawFd {
+        self.0
+    }
+}
+
+impl From<RawFd> for OwnedFd {
+    fn from(fd: RawFd) -> Self {
+        Self(fd)
+    }
+}
+
+impl Drop for OwnedFd {
+    fn drop(&mut self) {
+        unsafe {
+            close(self.0);
         }
     }
 }
@@ -96,7 +130,7 @@ fn alloc_fd() -> libc::c_int {
 #[derive(Debug)]
 struct SocketState {
     ty: libc::c_int,
-    _placeholder_file: FileDes,
+    _placeholder_file: PlaceholderFileDes,
     endpoint: Option<Arc<Endpoint>>,
     listening: bool,
 }
@@ -305,7 +339,7 @@ unsafe fn accept_impl(
     let fd = alloc_fd();
     let socket = SocketState {
         ty: libc::SOCK_STREAM,
-        _placeholder_file: FileDes(fd),
+        _placeholder_file: PlaceholderFileDes(fd),
         endpoint: Some(Arc::new(endpoint)),
         listening: false,
     };
@@ -412,7 +446,7 @@ define_sys_interceptor!(
 
         let socket = SocketState {
             ty,
-            _placeholder_file: FileDes(fd),
+            _placeholder_file: PlaceholderFileDes(fd),
             endpoint: None,
             listening: false,
         };

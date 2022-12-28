@@ -6,20 +6,20 @@ use std::{
     task::{Context, Poll},
 };
 
-use msim::net::{get_endpoint_from_socket, Endpoint};
+use msim::net::{get_endpoint_from_socket, Endpoint, OwnedFd};
 use real_tokio::io::{Interest, ReadBuf, Ready};
 
 use bytes::BufMut;
 
 #[derive(Debug)]
 pub struct UdpSocket {
-    fd: RawFd,
+    fd: OwnedFd,
     ep: Arc<Endpoint>,
     default_dest: Mutex<Option<SocketAddr>>,
 }
 
 impl UdpSocket {
-    fn new(fd: RawFd, ep: Arc<Endpoint>) -> Self {
+    fn new(fd: OwnedFd, ep: Arc<Endpoint>) -> Self {
         Self {
             fd,
             ep,
@@ -55,12 +55,12 @@ impl UdpSocket {
     pub fn from_std(socket: net::UdpSocket) -> io::Result<UdpSocket> {
         let fd = socket.into_raw_fd();
         let ep = get_endpoint_from_socket(fd)?;
-        Ok(Self::new(fd, ep))
+        Ok(Self::new(fd.into(), ep))
     }
 
     pub fn into_std(self) -> io::Result<std::net::UdpSocket> {
         let Self { fd, .. } = self;
-        unsafe { Ok(net::UdpSocket::from_raw_fd(fd)) }
+        unsafe { Ok(net::UdpSocket::from_raw_fd(fd.release())) }
     }
 
     pub fn local_addr(&self) -> io::Result<SocketAddr> {
@@ -287,7 +287,7 @@ impl UdpSocket {
 
 impl AsRawFd for UdpSocket {
     fn as_raw_fd(&self) -> RawFd {
-        self.fd
+        self.fd.as_raw_fd()
     }
 }
 
