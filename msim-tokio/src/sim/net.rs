@@ -17,9 +17,8 @@ use std::{
 pub use std::net::ToSocketAddrs;
 
 use msim::net::{
-    get_endpoint_from_socket, network::Payload, try_get_endpoint_from_socket, Endpoint,
+    get_endpoint_from_socket, network::Payload, try_get_endpoint_from_socket, Endpoint, OwnedFd,
 };
-
 use real_tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 
 pub use super::udp::*;
@@ -30,7 +29,7 @@ use crate::poller::Poller;
 
 /// Provide the tokio::net::TcpListener interface.
 pub struct TcpListener {
-    fd: RawFd,
+    fd: OwnedFd,
     ep: Arc<Endpoint>,
     poller: Poller<io::Result<(TcpStream, SocketAddr)>>,
 }
@@ -113,8 +112,8 @@ impl TcpListener {
     }
 
     pub fn from_std(listener: std::net::TcpListener) -> io::Result<TcpListener> {
-        let fd = listener.as_raw_fd();
-        let ep = get_endpoint_from_socket(fd)?;
+        let fd: OwnedFd = listener.as_raw_fd().into();
+        let ep = get_endpoint_from_socket(fd.as_raw_fd())?;
         Ok(Self {
             fd,
             ep,
@@ -124,7 +123,7 @@ impl TcpListener {
 
     pub fn into_std(self) -> io::Result<std::net::TcpListener> {
         let Self { fd, .. } = self;
-        unsafe { Ok(std::net::TcpListener::from_raw_fd(fd)) }
+        unsafe { Ok(std::net::TcpListener::from_raw_fd(fd.release())) }
     }
 
     pub fn local_addr(&self) -> io::Result<SocketAddr> {
@@ -581,7 +580,7 @@ fn split_owned(stream: TcpStream) -> (OwnedReadHalf, OwnedWriteHalf) {
 }
 
 pub struct TcpSocket {
-    fd: RawFd,
+    fd: OwnedFd,
     bind_addr: Mutex<Option<Arc<Endpoint>>>,
 }
 
@@ -672,7 +671,7 @@ impl TcpSocket {
 
 impl AsRawFd for TcpSocket {
     fn as_raw_fd(&self) -> RawFd {
-        self.fd
+        self.fd.as_raw_fd()
     }
 }
 
@@ -680,7 +679,7 @@ impl FromRawFd for TcpSocket {
     unsafe fn from_raw_fd(fd: RawFd) -> TcpSocket {
         let ep = try_get_endpoint_from_socket(fd).expect("socket does not exist");
         TcpSocket {
-            fd,
+            fd: fd.into(),
             bind_addr: Mutex::new(ep),
         }
     }
@@ -688,7 +687,7 @@ impl FromRawFd for TcpSocket {
 
 impl IntoRawFd for TcpSocket {
     fn into_raw_fd(self) -> RawFd {
-        self.fd
+        self.fd.release()
     }
 }
 
@@ -719,7 +718,11 @@ mod tests {
     use super::{OwnedReadHalf, OwnedWriteHalf, TcpListener, TcpStream};
     use bytes::{BufMut, BytesMut};
     use futures::join;
-    use msim::{rand, rand::RngCore, runtime::Runtime};
+    use msim::{
+        rand,
+        rand::RngCore,
+        runtime::{init_logger, Runtime},
+    };
     use real_tokio::{
         io::{AsyncReadExt, AsyncWriteExt},
         sync::Barrier,
@@ -828,6 +831,7 @@ mod tests {
 
     #[test]
     fn tcp_stream() {
+        init_logger();
         let runtime = Runtime::new();
         let addr1 = "10.0.0.1:1".parse::<SocketAddr>().unwrap();
         let addr2 = "10.0.0.2:1".parse::<SocketAddr>().unwrap();
@@ -842,6 +846,12 @@ mod tests {
 
         node1.spawn(async move {
             let listener = TcpListener::bind(addr1).await.unwrap();
+
+            // forget the first listener and rebind to make sure that ports are released and
+            // rebindable
+            std::mem::drop(listener);
+            let listener = TcpListener::bind(addr1).await.unwrap();
+
             listen_barrier.wait().await;
 
             let (socket, _) = listener.accept().await.unwrap();
