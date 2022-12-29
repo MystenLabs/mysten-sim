@@ -50,7 +50,12 @@ impl Default for Runtime {
 impl Runtime {
     /// Create a new runtime instance with default seed and config.
     pub fn new() -> Self {
-        Self::with_seed_and_config(0, SimConfig::default())
+        Self::with_seed(0)
+    }
+
+    /// Create a new runtime instance with a given seed and default config.
+    pub fn with_seed(seed: u64) -> Self {
+        Self::with_seed_and_config(seed, SimConfig::default())
     }
 
     /// Create a new runtime instance with given seed and config.

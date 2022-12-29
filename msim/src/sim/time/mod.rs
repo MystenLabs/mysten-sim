@@ -17,7 +17,7 @@ use std::{
 
 use pin_project_lite::pin_project;
 
-use tracing::trace;
+use tracing::{trace, warn};
 
 pub mod error;
 mod instant;
@@ -34,12 +34,25 @@ pub(crate) struct TimeRuntime {
 
 impl TimeRuntime {
     pub fn new(rand: &GlobalRng) -> Self {
-        // around 2022
         let base_time = SystemTime::UNIX_EPOCH
-            + Duration::from_secs(
-                60 * 60 * 24 * 365 * (2022 - 1970)
-                    + rand.with(|rng| rng.gen_range(0..60 * 60 * 24 * 365)),
-            );
+            + match std::env::var("MSIM_BASE_TIME") {
+                Ok(base_time) => {
+                    let base_time: u64 = match base_time.parse() {
+                        Ok(t) => t,
+                        Err(e) => panic!(
+                            "MSIM_BASE_TIME='{}' was not parseable as a u64: {}",
+                            base_time, e
+                        ),
+                    };
+                    Duration::from_secs(base_time)
+                }
+
+                // around 2022
+                Err(_) => Duration::from_secs(
+                    60 * 60 * 24 * 365 * (2022 - 1970)
+                        + rand.with(|rng| rng.gen_range(0..60 * 60 * 24 * 365)),
+                ),
+            };
         let handle = TimeHandle {
             timer: Arc::new(Mutex::new(Timer::default())),
             clock: ClockHandle::new(base_time),
@@ -309,14 +322,33 @@ pub(crate) fn ensure_clocks() {
     }
 }
 
-/*
- * TODO: RocksDB schedules timers on multiple threads, including on the simulation thread, and it
- * can't handle having different views of the clock in different threads.
- * This should be fixable by creating the DBs in different threads, but that is somewhat invasive.
+fn use_real_wallcock() -> bool {
+    thread_local! {
+        // Note: setting MSIM_USE_REAL_WALLCLOCK will result in non-determinism for code that reads
+        // and acts on the absolute wall time. (Anything involving deltas only will still be
+        // deterministic).
+        static USE_REAL_WALLCLOCK: bool = {
+            let use_real_wallcock = std::env::var("MSIM_USE_REAL_WALLCLOCK").is_ok();
+            if use_real_wallcock {
+                warn!("non-determinism possible: using real wall clock because of MSIM_USE_REAL_WALLCLOCK");
+            }
+            use_real_wallcock
+        }
+    }
+    USE_REAL_WALLCLOCK.with(|u| *u)
+}
+
+#[cfg(target_os = "macos")]
+define_bypass!(bypass_gettimeofday,
+    fn gettimeofday(tp: *mut libc::timeval, tz: *mut libc::c_void) -> libc::c_int);
 
 #[cfg(target_os = "macos")]
 define_sys_interceptor!(
     fn gettimeofday(tp: *mut libc::timeval, tz: *mut libc::c_void) -> libc::c_int {
+        if use_real_wallcock() {
+            return bypass_gettimeofday(tp, tz);
+        }
+
         // NOTE: tz should be NULL.
         // macOS: timezone is no longer used; this information is kept outside the kernel.
         if tp.is_null() {
@@ -335,7 +367,6 @@ define_sys_interceptor!(
         0
     }
 );
-*/
 
 #[cfg(target_os = "macos")]
 define_bypass!(bypass_mach_absolute_time,
@@ -421,9 +452,10 @@ define_sys_interceptor!(
         match clock_id {
             // used by SystemTime
             libc::CLOCK_REALTIME | libc::CLOCK_REALTIME_COARSE | libc::CLOCK_BOOTTIME => {
-                return bypass_clock_gettime(clock_id, ts);
-                /*
-                 * See the TODO above re RocksDB
+                if use_real_wallcock() {
+                    return bypass_clock_gettime(clock_id, ts);
+                }
+
                 let dur = time
                     .now_time()
                     .duration_since(std::time::SystemTime::UNIX_EPOCH)
@@ -432,7 +464,6 @@ define_sys_interceptor!(
                     tv_sec: dur.as_secs() as _,
                     tv_nsec: dur.subsec_nanos() as _,
                 });
-                */
             }
 
             // used by Instant
@@ -455,7 +486,7 @@ define_sys_interceptor!(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::runtime::Runtime;
+    use crate::runtime::{init_logger, Runtime};
 
     #[test]
     fn time() {
@@ -493,9 +524,32 @@ mod tests {
         });
     }
 
+    // Can't easily test behaviors that rely on env vars. To test manually, run:
+    //
+    // Verify that the same system time is always printed.
+    //
+    //     RUSTFLAGS="--cfg msim" cargo nextest run system_clock --no-capture
+    //
+    // Verify that a different system time is printed for different seeds.
+    //
+    //     MSIM_TEST_SEED=2 RUSTFLAGS="--cfg msim" cargo nextest run system_clock --no-capture
+    //
+    // Verify that the correct real system time is printed.
+    //
+    //     MSIM_USE_REAL_WALLCLOCK=1 RUSTFLAGS="--cfg msim" cargo nextest run system_clock --no-capture
+    //
+    // Verify that the specified base time is printed.
+    //
+    //     MSIM_BASE_TIME=1453807127 RUSTFLAGS="--cfg msim" cargo nextest run system_clock --no-capture
     #[test]
     fn system_clock() {
-        let runtime = Runtime::new();
+        init_logger();
+        let seed: u64 = std::env::var("MSIM_TEST_SEED")
+            .unwrap_or("1".to_string())
+            .parse()
+            .unwrap();
+
+        let runtime = Runtime::with_seed(seed);
         runtime.block_on(async {
             let t0 = Instant::now();
             let s0 = SystemTime::now();
