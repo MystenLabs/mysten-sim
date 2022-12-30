@@ -363,7 +363,6 @@ define_sys_interceptor!(
             tv_sec: dur.as_secs() as _,
             tv_usec: dur.subsec_micros() as _,
         });
-        time.clock.advance(Duration::from_micros(5));
         0
     }
 );
