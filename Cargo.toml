@@ -8,4 +8,5 @@ members = [
 exclude = [
     "tokio",
     "test-crates/jsonrpsee-test",
+    "test-crates/anemo-test",
 ]
