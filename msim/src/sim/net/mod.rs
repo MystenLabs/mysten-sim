@@ -80,7 +80,7 @@ struct PlaceholderFileDes(libc::c_int);
 impl Drop for PlaceholderFileDes {
     fn drop(&mut self) {
         unsafe {
-            assert_eq!(bypass_close(self.0), 0);
+            bypass_close(self.0);
         }
     }
 }
