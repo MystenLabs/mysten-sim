@@ -178,7 +178,6 @@ impl Network {
             addr.set_port(port);
         }
         // insert socket
-        debug!("bound: {addr} -> {node_id}");
         match node.sockets.entry(addr.port()) {
             Entry::Occupied(_) => {
                 return Err(io::Error::new(
@@ -190,6 +189,7 @@ impl Network {
                 o.insert(Default::default());
             }
         }
+        debug!("bound: {addr} -> {node_id}");
         Ok(addr)
     }
 

@@ -80,7 +80,7 @@ struct PlaceholderFileDes(libc::c_int);
 impl Drop for PlaceholderFileDes {
     fn drop(&mut self) {
         unsafe {
-            assert_eq!(bypass_close(self.0), 0);
+            bypass_close(self.0);
         }
     }
 }
@@ -366,8 +366,26 @@ define_sys_interceptor!(
 
         HostNetworkState::with_socket(sock_fd, |socket| {
             assert!(socket.endpoint.is_none(), "socket already bound");
-            socket.endpoint = Some(Arc::new(Endpoint::bind_sync(socket_addr).unwrap()));
-            0
+            match Endpoint::bind_sync(socket_addr) {
+                Ok(ep) => {
+                    socket.endpoint = Some(Arc::new(ep));
+                    0
+                }
+                Err(err) => match err.kind() {
+                    io::ErrorKind::AddrNotAvailable => {
+                        set_errno(libc::EADDRNOTAVAIL);
+                        -1
+                    }
+                    io::ErrorKind::AddrInUse => {
+                        set_errno(libc::EADDRINUSE);
+                        -1
+                    }
+                    _ => {
+                        warn!("unknown error {}", err);
+                        -1
+                    }
+                },
+            }
         })
         .unwrap_or_else(|e| {
             trace!("error: {}", e);
