@@ -1,6 +1,6 @@
 [package]
 name = "tokio"
-version = "1.22.0"
+version = "1.24.1"
 edition = "2021"
 authors = ["Runji Wang <wangrunji0408@163.com>", "Mysten Labs <build@mystenlabs.com>"]
 description = "The `tokio` simulator on msim."
@@ -29,7 +29,6 @@ full = [
   "signal",
   "sync",
   "time",
-  "winapi",
 ]
 
 fs = ["real_tokio/fs"]
@@ -55,7 +54,6 @@ signal-hook-registry = ["real_tokio/signal-hook-registry"]
 socket2 = ["real_tokio/socket2"]
 stats = ["real_tokio/stats"]
 tokio-macros = ["real_tokio/tokio-macros"]
-winapi = ["real_tokio/winapi"]
 
 [target.'cfg(msim)'.dependencies]
 msim = { version = "0.1.0", path = "../msim" }
