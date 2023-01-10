@@ -112,7 +112,7 @@ impl TcpListener {
     }
 
     pub fn from_std(listener: std::net::TcpListener) -> io::Result<TcpListener> {
-        let fd: OwnedFd = listener.as_raw_fd().into();
+        let fd: OwnedFd = listener.into_raw_fd().into();
         let ep = get_endpoint_from_socket(fd.as_raw_fd())?;
         Ok(Self {
             fd,
