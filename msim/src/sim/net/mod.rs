@@ -81,9 +81,9 @@ impl Drop for PlaceholderFileDes {
     fn drop(&mut self) {
         unsafe {
             debug!("closing {:?}", self);
-            let stat = bypass_close(self.0);
-            if stat != 0 {
-                panic!("failed to close {}, error: {}", self.0, stat);
+            if bypass_close(self.0) != 0 {
+                let err = io::Error::last_os_error();
+                panic!("failed to close {}, error: {}", self.0, err);
             }
         }
     }
