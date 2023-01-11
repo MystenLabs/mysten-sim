@@ -261,8 +261,9 @@ fn parse_test(mut input: syn::ItemFn, args: syn::AttributeArgs) -> Result<TokenS
 
             let mut rand_log = None;
             let mut return_value = None;
-            for _i in 0..count {
+            for i in 0..count {
                 let mut inner_seed = seed;
+                println!("starting test iteration {} with seed {}", i, inner_seed);
 
                 let config = std::thread::spawn(move || {
                     let rt = #crate_ident::runtime::Runtime::with_seed_and_config(inner_seed, #crate_ident::SimConfig::default());

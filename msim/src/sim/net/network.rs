@@ -171,6 +171,7 @@ impl Network {
             let port = (next_ephemeral_port..=u16::MAX)
                 .find(|port| !node.sockets.contains_key(port))
                 .ok_or_else(|| {
+                    warn!("ephemeral ports exhausted");
                     io::Error::new(io::ErrorKind::AddrInUse, "no available ephemeral port")
                 })?;
             node.next_ephemeral_port = port.wrapping_add(1);
@@ -180,10 +181,11 @@ impl Network {
         // insert socket
         match node.sockets.entry(addr.port()) {
             Entry::Occupied(_) => {
+                warn!("bind() error: address already in use: {addr:?}");
                 return Err(io::Error::new(
                     io::ErrorKind::AddrInUse,
                     format!("address already in use: {addr}"),
-                ))
+                ));
             }
             Entry::Vacant(o) => {
                 o.insert(Default::default());
