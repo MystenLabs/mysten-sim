@@ -303,14 +303,15 @@ impl Network {
             ));
         }
 
-        // TODO: need to distinguish between tcp/udp for the purposes of packet loss.
-        let plr = self
-            .config
-            .packet_loss
-            .packet_loss_rate(&mut self.rand, node_id, dst_node);
-        if self.rand.gen_bool(plr) {
-            trace!("packet loss");
-            return Ok(());
+        if data.is_udp() {
+            let plr = self
+                .config
+                .packet_loss
+                .packet_loss_rate(&mut self.rand, node_id, dst_node);
+            if self.rand.gen_bool(plr) {
+                trace!("packet loss");
+                return Ok(());
+            }
         }
 
         let node = &self.nodes[&dst_node];
