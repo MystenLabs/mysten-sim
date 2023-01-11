@@ -80,7 +80,11 @@ struct PlaceholderFileDes(libc::c_int);
 impl Drop for PlaceholderFileDes {
     fn drop(&mut self) {
         unsafe {
-            bypass_close(self.0);
+            debug!("closing {:?}", self);
+            if bypass_close(self.0) != 0 {
+                let err = io::Error::last_os_error();
+                panic!("failed to close {}, error: {}", self.0, err);
+            }
         }
     }
 }
