@@ -303,14 +303,29 @@ impl Network {
             ));
         }
 
-        if data.is_udp() {
-            let plr = self
-                .config
-                .packet_loss
-                .packet_loss_rate(&mut self.rand, node_id, dst_node);
-            if self.rand.gen_bool(plr) {
-                trace!("packet loss");
-                return Ok(());
+        match data.ty {
+            PayloadType::Udp => {
+                let plr =
+                    self.config
+                        .packet_loss
+                        .packet_loss_rate(&mut self.rand, node_id, dst_node);
+                if self.rand.gen_bool(plr) {
+                    trace!("packet loss");
+                    return Ok(());
+                }
+            }
+            PayloadType::TcpSignalConnect | PayloadType::TcpData => {
+                let plr =
+                    self.config
+                        .tcp_packet_loss
+                        .packet_loss_rate(&mut self.rand, node_id, dst_node);
+                if self.rand.gen_bool(plr) {
+                    trace!("tcp connection failure");
+                    return Err(io::Error::new(
+                        io::ErrorKind::ConnectionReset,
+                        format!("peer hung up: {dst}"),
+                    ));
+                }
             }
         }
 
