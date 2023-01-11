@@ -36,13 +36,14 @@
 //! ```
 
 use std::{
-    collections::{hash_map::Entry, HashMap},
+    collections::{hash_map::Entry, HashMap, HashSet},
     io,
     net::{IpAddr, Ipv4Addr, SocketAddr, ToSocketAddrs},
     os::unix::io::{AsRawFd, RawFd},
     sync::{Arc, Mutex},
     task::Context,
 };
+use tap::TapFallible;
 use tracing::*;
 
 pub mod config;
@@ -641,7 +642,12 @@ unsafe fn send_impl(
         .as_ref()
         .expect("sendmsg on unconnected sockets not supported");
 
-    ep.send_to_raw_sync(*dst_addr, dst_addr.port().into(), msg);
+    ep.send_to_raw_sync(*dst_addr, dst_addr.port().into(), Payload::new_udp(msg))
+        .tap_err(|e| {
+            trace!("udp send error: {}", e);
+        })
+        // ok to ignore error when sending udp
+        .ok();
 
     slice.len() as libc::ssize_t
 }
@@ -744,7 +750,10 @@ unsafe fn recv_impl(ep: &Endpoint, msg: *mut libc::msghdr) -> CResult<libc::ssiz
         );
     }
 
+    assert!(payload.is_udp());
+
     let payload = payload
+        .data
         .downcast::<UDPMessage>()
         .expect("message was not UDPMessage")
         .into_payload();
@@ -908,7 +917,7 @@ impl NetSim {
         self.time.sleep(delay).await;
     }
 
-    /// Get the next unused port number for this node.
+    /// Get the next unused tcp id for this node.
     pub fn next_tcp_id(&self, node: NodeId) -> u32 {
         let mut map = self.next_tcp_id_map.lock().unwrap();
         match map.entry(node) {
@@ -932,6 +941,7 @@ pub struct Endpoint {
     node: NodeId,
     addr: SocketAddr,
     peer: Option<SocketAddr>,
+    live_tcp_ids: Mutex<HashSet<u32>>,
 }
 
 impl std::fmt::Debug for Endpoint {
@@ -956,6 +966,7 @@ impl Endpoint {
             node,
             addr,
             peer: None,
+            live_tcp_ids: Default::default(),
         };
         trace!("Endpoint::bind_sync() -> {:?}", ep);
         Ok(ep)
@@ -988,6 +999,7 @@ impl Endpoint {
             node,
             addr,
             peer: None,
+            live_tcp_ids: Default::default(),
         })
     }
 
@@ -1014,12 +1026,34 @@ impl Endpoint {
             node,
             addr,
             peer: Some(peer),
+            live_tcp_ids: Default::default(),
         })
     }
 
     /// Allocate a new tcp id number for this node. Ids are never reused.
     pub fn allocate_local_tcp_id(&self) -> u32 {
-        self.net.next_tcp_id(self.node)
+        let id = self.net.next_tcp_id(self.node);
+        self.live_tcp_ids.lock().unwrap().insert(id);
+        self.net
+            .network
+            .lock()
+            .unwrap()
+            .register_tcp_id(self.node, id);
+        id
+    }
+
+    /// Remove a tcp id number from this node.
+    pub fn deregister_tcp_id(&self, remote_sock: &SocketAddr, id: u32) {
+        assert!(
+            self.live_tcp_ids.lock().unwrap().remove(&id),
+            "unknown tcp id {}",
+            id
+        );
+        self.net
+            .network
+            .lock()
+            .unwrap()
+            .deregister_tcp_id(self.node, remote_sock, id);
     }
 
     /// Returns the local socket address.
@@ -1044,9 +1078,14 @@ impl Endpoint {
     ///     net.send_to("127.0.0.1:4242", 0, &[0; 10]).await.expect("couldn't send data");
     /// });
     /// ```
-    pub async fn send_to(&self, dst: impl ToSocketAddrs, tag: u64, buf: &[u8]) -> io::Result<()> {
+    pub async fn send_to(
+        &self,
+        dst: impl ToSocketAddrs,
+        tag: u64,
+        payload: Payload,
+    ) -> io::Result<()> {
         let dst = dst.to_socket_addrs()?.next().unwrap();
-        self.send_to_raw(dst, tag, Box::new(Vec::from(buf))).await
+        self.send_to_raw(dst, tag, payload).await
     }
 
     /// Receives a single message with given tag on the socket.
@@ -1063,18 +1102,21 @@ impl Endpoint {
     /// });
     /// ```
     pub async fn recv_from(&self, tag: u64, buf: &mut [u8]) -> io::Result<(usize, SocketAddr)> {
-        let (data, from) = self.recv_from_raw(tag).await?;
+        let (payload, from) = self.recv_from_raw(tag).await?;
         // copy to buffer
-        let data = data.downcast::<Vec<u8>>().expect("message is not data");
+        let data = payload
+            .data
+            .downcast::<Vec<u8>>()
+            .expect("message is not data");
         let len = buf.len().min(data.len());
         buf[..len].copy_from_slice(&data[..len]);
         Ok((len, from))
     }
 
     /// Sends data on the socket to the remote address to which it is connected.
-    pub async fn send(&self, tag: u64, buf: &[u8]) -> io::Result<()> {
+    pub async fn send(&self, tag: u64, payload: Payload) -> io::Result<()> {
         let peer = self.peer_addr()?;
-        self.send_to(peer, tag, buf).await
+        self.send_to(peer, tag, payload).await
     }
 
     /// Receives a single datagram message on the socket from the remote address to which it is connected.
@@ -1095,7 +1137,7 @@ impl Endpoint {
     /// It is provided for use by other simulators.
     #[cfg_attr(docsrs, doc(cfg(msim)))]
     pub async fn send_to_raw(&self, dst: SocketAddr, tag: u64, data: Payload) -> io::Result<()> {
-        self.send_to_raw_sync(dst, tag, data);
+        self.send_to_raw_sync(dst, tag, data)?;
         self.net.rand_delay().await;
         Ok(())
     }
@@ -1105,13 +1147,19 @@ impl Endpoint {
     /// NOTE: Applications should not use this function!
     /// It is provided for use by other simulators.
     #[cfg_attr(docsrs, doc(cfg(msim)))]
-    pub fn send_to_raw_sync(&self, dst: SocketAddr, tag: u64, data: Payload) {
-        trace!("send_to_raw {} -> {}, {:x}", self.addr, dst, tag);
+    pub fn send_to_raw_sync(&self, dst: SocketAddr, tag: u64, data: Payload) -> io::Result<()> {
+        trace!(
+            "send_to_raw {} -> {}, {:x} {:?}",
+            self.addr,
+            dst,
+            tag,
+            data.ty
+        );
         self.net
             .network
             .lock()
             .unwrap()
-            .send(plugin::node(), self.addr, dst, tag, data);
+            .send(plugin::node(), self.addr, dst, tag, data)
     }
 
     /// Receives a raw message.
@@ -1180,6 +1228,20 @@ impl Endpoint {
         Ok(msg)
     }
 
+    /// Check if the peer of a TCP connection has hung up.
+    pub fn is_peer_live(&self, peer: Option<SocketAddr>, remote_tcp_id: u32) -> bool {
+        let peer = peer.as_ref().unwrap_or_else(|| {
+            self.peer
+                .as_ref()
+                .expect("is_peer_live called without peer")
+        });
+        self.net
+            .network
+            .lock()
+            .unwrap()
+            .is_tcp_session_live(peer, remote_tcp_id)
+    }
+
     /// Check if there is a message waiting that can be received without blocking.
     /// If not, schedule a wakeup using the context.
     pub fn recv_ready(&self, cx: Option<&mut Context<'_>>, tag: u64) -> io::Result<bool> {
@@ -1194,6 +1256,9 @@ impl Endpoint {
 
 impl Drop for Endpoint {
     fn drop(&mut self) {
+        // all tcp sessions should already be deregistered.
+        assert!(self.live_tcp_ids.get_mut().unwrap().is_empty());
+
         // avoid panic on panicking
         if let Ok(mut network) = self.net.network.lock() {
             network.close(self.node, self.addr);

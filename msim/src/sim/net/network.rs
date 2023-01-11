@@ -34,6 +34,9 @@ struct Node {
     /// Sockets in the node.
     sockets: HashMap<u16, Arc<Mutex<Mailbox>>>,
 
+    /// live tcp connections.
+    live_tcp_ids: HashSet<u32>,
+
     /// Next ephemeral port. There is some code in sui/narwhal that wants to pick ports in advance
     /// and then bind to them later. This is done in narwhal by binding to an ephemeral port,
     /// making a connection, and then relying on time-wait behavior to reserve the port until it is
@@ -49,6 +52,7 @@ impl Default for Node {
         Self {
             ip: None,
             sockets: HashMap::new(),
+            live_tcp_ids: HashSet::new(),
             next_ephemeral_port: 0x8000,
         }
     }
@@ -195,6 +199,50 @@ impl Network {
         Ok(addr)
     }
 
+    pub fn register_tcp_id(&mut self, node: NodeId, tcp_id: u32) {
+        trace!("registering tcp id {} for node {}", tcp_id, node);
+        assert!(
+            self.nodes
+                .get_mut(&node)
+                .unwrap()
+                .live_tcp_ids
+                .insert(tcp_id),
+            "duplicate tcp id {}",
+            tcp_id
+        );
+    }
+
+    pub fn deregister_tcp_id(&mut self, node: NodeId, remote_addr: &SocketAddr, tcp_id: u32) {
+        trace!("deregistering tcp id {} for node {}", tcp_id, node);
+
+        // remove id from node
+        assert!(
+            self.nodes
+                .get_mut(&node)
+                .unwrap()
+                .live_tcp_ids
+                .remove(&tcp_id),
+            "unknown tcp id {}",
+            tcp_id
+        );
+
+        // wake the remote end in case it is waiting on a read.
+        if let Some(socket) = self
+            .nodes
+            .get_mut(&self.get_node_for_addr(&remote_addr.ip()).unwrap())
+            .unwrap()
+            .sockets
+            .get(&remote_addr.port())
+        {
+            socket.lock().unwrap().wake_tcp_connection(tcp_id);
+        }
+    }
+
+    pub fn is_tcp_session_live(&self, peer: &SocketAddr, tcp_id: u32) -> bool {
+        let node_id = self.get_node_for_addr(&peer.ip()).expect("no such node");
+        self.nodes[&node_id].live_tcp_ids.contains(&tcp_id)
+    }
+
     pub fn signal_connect(&self, src: SocketAddr, dst: SocketAddr) -> bool {
         let node = self.get_node_for_addr(&dst.ip());
         if node.is_none() {
@@ -226,46 +274,72 @@ impl Network {
 
     pub fn send(
         &mut self,
-        node: NodeId,
+        node_id: NodeId,
         src: SocketAddr,
         dst: SocketAddr,
         tag: u64,
         data: Payload,
-    ) {
-        trace!("send: {node} {src} -> {dst}, tag={tag:x}");
+    ) -> io::Result<()> {
+        trace!("send: {node_id} {src} -> {dst}, tag={tag:x}");
         let dst_node = if dst.ip().is_loopback() {
-            node
+            node_id
         } else if let Some(x) = self.addr_to_node.get(&dst.ip()) {
             *x
         } else {
             trace!("destination not found: {dst}");
-            return;
+            return Err(io::Error::new(
+                io::ErrorKind::ConnectionRefused,
+                format!("host unreachable: {dst}"),
+            ));
         };
-        if self.clogged_node.contains(&node)
+        if self.clogged_node.contains(&node_id)
             || self.clogged_node.contains(&dst_node)
-            || self.clogged_link.contains(&(node, dst_node))
+            || self.clogged_link.contains(&(node_id, dst_node))
         {
             trace!("clogged");
-            return;
+            return Err(io::Error::new(
+                io::ErrorKind::ConnectionRefused,
+                format!("host unreachable: {dst}"),
+            ));
         }
 
         // TODO: need to distinguish between tcp/udp for the purposes of packet loss.
         let plr = self
             .config
             .packet_loss
-            .packet_loss_rate(&mut self.rand, node, dst_node);
+            .packet_loss_rate(&mut self.rand, node_id, dst_node);
         if self.rand.gen_bool(plr) {
             trace!("packet loss");
-            return;
+            return Ok(());
         }
 
-        let ep = match self.nodes[&dst_node].sockets.get(&dst.port()) {
+        let node = &self.nodes[&dst_node];
+
+        if data.is_tcp_data() {
+            let id: u32 = (tag >> 32).try_into().unwrap();
+            // sender learns instantaneously that the other end has hung up - this isn't very
+            // realistic but it shouldn't matter for the most part. At some point we may build a
+            // more physically-based tcp simulator.
+            if !node.live_tcp_ids.contains(&id) {
+                trace!("tcp session to {dst} has ended");
+                return Err(io::Error::new(
+                    io::ErrorKind::ConnectionReset,
+                    format!("peer hung up: {dst}"),
+                ));
+            }
+        }
+
+        let ep = match node.sockets.get(&dst.port()) {
             Some(ep) => ep.clone(),
             None => {
-                trace!("destination not found: {dst}");
-                return;
+                trace!("destination port not available: {dst}");
+                return Err(io::Error::new(
+                    io::ErrorKind::ConnectionRefused,
+                    format!("connection refused: {dst}"),
+                ));
             }
         };
+
         let msg = Message {
             tag,
             data,
@@ -274,14 +348,16 @@ impl Network {
         let latency = self
             .config
             .latency
-            .get_latency(&mut self.rand, node, dst_node);
+            .get_latency(&mut self.rand, node_id, dst_node);
         trace!("delay: {latency:?}");
         self.time
             .add_timer(self.time.now_instant() + latency, move || {
-                trace!("deliver: {node} {src} -> {dst}, tag={tag:x}");
+                trace!("deliver: {node_id} {src} -> {dst}, tag={tag:x}");
                 ep.lock().unwrap().deliver(msg);
             });
         self.stat.msg_count += 1;
+
+        Ok(())
     }
 
     pub fn recv(&mut self, node: NodeId, dst: SocketAddr, tag: u64) -> oneshot::Receiver<Message> {
@@ -318,7 +394,61 @@ pub struct Message {
     pub from: SocketAddr,
 }
 
-pub type Payload = Box<dyn Any + Send + Sync>;
+#[derive(Debug)]
+pub enum PayloadType {
+    TcpSignalConnect,
+    TcpData,
+    Udp,
+}
+
+pub struct Payload {
+    pub ty: PayloadType,
+    pub data: Box<dyn Any + Send + Sync>,
+}
+
+impl Payload {
+    pub fn new_udp(data: Box<dyn Any + Send + Sync>) -> Self {
+        Self {
+            ty: PayloadType::Udp,
+            data,
+        }
+    }
+
+    pub fn new_tcp_connect(data: Box<dyn Any + Send + Sync>) -> Self {
+        Self {
+            ty: PayloadType::TcpSignalConnect,
+            data,
+        }
+    }
+
+    pub fn new_tcp_data(data: Box<dyn Any + Send + Sync>) -> Self {
+        Self {
+            ty: PayloadType::TcpData,
+            data,
+        }
+    }
+
+    pub fn is_udp(&self) -> bool {
+        match self.ty {
+            PayloadType::Udp => true,
+            _ => false,
+        }
+    }
+
+    pub fn is_tcp_data(&self) -> bool {
+        match self.ty {
+            PayloadType::TcpData => true,
+            _ => false,
+        }
+    }
+
+    pub fn is_tcp_connect(&self) -> bool {
+        match self.ty {
+            PayloadType::TcpSignalConnect => true,
+            _ => false,
+        }
+    }
+}
 
 /// Tag message mailbox for an endpoint.
 #[derive(Default)]
@@ -337,6 +467,15 @@ struct Mailbox {
 }
 
 impl Mailbox {
+    fn wake_tcp_connection(&mut self, tcp_id: u32) {
+        for i in (0..self.wakers.len()).rev() {
+            if (self.wakers[i].0 >> 32) == tcp_id as u64 {
+                let (_, waker) = self.wakers.swap_remove(i);
+                waker.wake();
+            }
+        }
+    }
+
     fn deliver(&mut self, msg: Message) {
         for i in (0..self.wakers.len()).rev() {
             if self.wakers[i].0 == msg.tag {

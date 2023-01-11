@@ -1,4 +1,4 @@
-use tracing::trace;
+use tracing::{debug, trace};
 
 use std::{
     future::Future,
@@ -17,7 +17,9 @@ use std::{
 pub use std::net::ToSocketAddrs;
 
 use msim::net::{
-    get_endpoint_from_socket, network::Payload, try_get_endpoint_from_socket, Endpoint, OwnedFd,
+    get_endpoint_from_socket,
+    network::{Payload, PayloadType},
+    try_get_endpoint_from_socket, Endpoint, OwnedFd,
 };
 use real_tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 
@@ -102,11 +104,24 @@ impl TcpListener {
             from,
             remote_tcp_id
         );
+
         state
             .ep
             .send_to_raw(from, state.next_send_tag(), Message::tcp_id(local_tcp_id))
-            .await?;
+            .await
+            .map_err(|e| {
+                trace!("error sending local_tcp_id to {}: {} ", from, e);
+                io::Error::new(
+                    io::ErrorKind::ConnectionReset,
+                    format!("peer {} hung up", from),
+                )
+            })?;
 
+        debug!(
+            "new tcp connection from {} -> {}",
+            state.remote_sock,
+            state.ep.local_addr().unwrap(),
+        );
         let stream = TcpStream::new(state);
         Ok((stream, from))
     }
@@ -197,6 +212,7 @@ impl Buffer {
     }
 }
 
+#[derive(Debug)]
 enum Message {
     TcpId(u32),
     // sequence number + payload - the simulator is unordered.
@@ -207,15 +223,21 @@ enum Message {
 
 impl Message {
     fn new(payload: Payload) -> Self {
-        *payload.downcast::<Message>().unwrap()
+        let s = *payload.data.downcast::<Message>().unwrap();
+        match (&s, &payload.ty) {
+            (Message::TcpId(_), PayloadType::TcpSignalConnect)
+            | (Message::Payload(_, _), PayloadType::TcpData) => (),
+            _ => panic!("invalid payload type {:?}, {:?}", s, payload.ty),
+        }
+        s
     }
 
-    fn tcp_id(p: u32) -> Box<Message> {
-        Box::new(Message::TcpId(p))
+    fn tcp_id(p: u32) -> Payload {
+        Payload::new_tcp_connect(Box::new(Message::TcpId(p)))
     }
 
-    fn payload(s: u32, v: Vec<u8>) -> Box<Message> {
-        Box::new(Message::Payload(s, v))
+    fn payload(s: u32, v: Vec<u8>) -> Payload {
+        Payload::new_tcp_data(Box::new(Message::Payload(s, v)))
     }
 
     fn unwrap_payload(self) -> (u32, Vec<u8>) {
@@ -284,6 +306,13 @@ impl TcpState {
         let ret = self.next_recv_tag();
         self.increment_recv_tag();
         ret
+    }
+}
+
+impl Drop for TcpState {
+    fn drop(&mut self) {
+        self.ep
+            .deregister_tcp_id(&self.remote_sock, self.local_tcp_id);
     }
 }
 
@@ -377,12 +406,14 @@ impl TcpStream {
         let num = buf.len();
         let tag = self.state.next_send_tag();
         let seq = (tag & 0xffffffff) as u32;
-        self.state.ep.send_to_raw_sync(
+        match self.state.ep.send_to_raw_sync(
             self.state.remote_sock,
             tag,
             Message::payload(seq, buf.to_vec()),
-        );
-        Poll::Ready(Ok(num))
+        ) {
+            Err(err) => Poll::Ready(Err(err)),
+            Ok(_) => Poll::Ready(Ok(num)),
+        }
     }
 
     fn poll_read_priv(
@@ -400,6 +431,21 @@ impl TcpStream {
             // We might be able to read more from the network right now,
             // but for simplicity we just return immediately if there was anything in the buffer.
             return Poll::Ready(Ok(num_bytes));
+        }
+
+        let remote_tcp_id = self.state.remote_tcp_id;
+
+        // we learn about closed connections instantly. this is not realistic, but is good enough
+        // for most purposes.
+        if !self
+            .state
+            .ep
+            .is_peer_live(Some(self.state.remote_sock), remote_tcp_id)
+        {
+            return Poll::Ready(Err(io::Error::new(
+                io::ErrorKind::ConnectionReset,
+                format!("peer {} hung up", self.state.remote_sock),
+            )));
         }
 
         let tag = self.state.next_recv_tag();
@@ -721,14 +767,15 @@ mod tests {
     use msim::{
         rand,
         rand::RngCore,
-        runtime::{init_logger, Runtime},
+        runtime::{init_logger, Handle, Runtime},
+        time::{sleep, timeout, Duration},
     };
     use real_tokio::{
         io::{AsyncReadExt, AsyncWriteExt},
         sync::Barrier,
     };
-    use std::{net::SocketAddr, sync::Arc};
-    use tracing::trace;
+    use std::{io, net::SocketAddr, sync::Arc};
+    use tracing::{debug, trace};
 
     async fn test_stream_read(mut stream: OwnedReadHalf) {
         trace!("test_stream_read");
@@ -788,98 +835,388 @@ mod tests {
     #[test]
     fn tcp_ping_pong() {
         let runtime = Runtime::new();
-        let addr1 = "10.0.0.1:1".parse::<SocketAddr>().unwrap();
-        let addr2 = "10.0.0.2:1".parse::<SocketAddr>().unwrap();
-        let node1 = runtime.create_node().ip(addr1.ip()).build();
-        let node2 = runtime.create_node().ip(addr2.ip()).build();
+        runtime.block_on(async move {
+            let addr1 = "10.0.0.1:1".parse::<SocketAddr>().unwrap();
+            let addr2 = "10.0.0.2:1".parse::<SocketAddr>().unwrap();
+            let handle = Handle::current();
+            let node1 = handle.create_node().ip(addr1.ip()).build();
+            let node2 = handle.create_node().ip(addr2.ip()).build();
 
-        let listen_barrier = Arc::new(Barrier::new(2));
-        let listen_barrier_ = listen_barrier.clone();
+            let listen_barrier = Arc::new(Barrier::new(2));
+            let listen_barrier_ = listen_barrier.clone();
 
-        node1.spawn(async move {
-            let listener = TcpListener::bind(addr1).await.unwrap();
-            listen_barrier.wait().await;
+            let join_barrier = Arc::new(Barrier::new(2));
+            let join_barrier_ = join_barrier.clone();
 
-            let (mut socket, _) = listener.accept().await.unwrap();
+            node1.spawn(async move {
+                let listener = TcpListener::bind(addr1).await.unwrap();
+                listen_barrier.wait().await;
 
-            let mut read_buf = BytesMut::with_capacity(16);
-            socket.read_buf(&mut read_buf).await.unwrap();
+                let (mut socket, _) = listener.accept().await.unwrap();
 
-            assert_eq!(read_buf[0], 42);
+                let mut read_buf = BytesMut::with_capacity(16);
+                socket.read_buf(&mut read_buf).await.unwrap();
 
-            let mut write_buf = BytesMut::with_capacity(16);
-            write_buf.put_u8(77);
-            socket.write_all_buf(&mut write_buf).await.unwrap();
+                assert_eq!(read_buf[0], 42);
+
+                let mut write_buf = BytesMut::with_capacity(16);
+                write_buf.put_u8(77);
+                socket.write_all_buf(&mut write_buf).await.unwrap();
+
+                join_barrier.wait().await;
+            });
+
+            let f = node2.spawn(async move {
+                listen_barrier_.wait().await;
+
+                let mut socket = TcpStream::connect(addr1).await.unwrap();
+                let mut write_buf = BytesMut::with_capacity(16);
+                write_buf.put_u8(42);
+                socket.write_all_buf(&mut write_buf).await.unwrap();
+
+                let mut read_buf = BytesMut::with_capacity(16);
+                socket.read_buf(&mut read_buf).await.unwrap();
+
+                assert_eq!(read_buf[0], 77);
+
+                join_barrier_.wait().await;
+            });
+
+            f.await.unwrap();
         });
-
-        let f = node2.spawn(async move {
-            listen_barrier_.wait().await;
-
-            let mut socket = TcpStream::connect(addr1).await.unwrap();
-            let mut write_buf = BytesMut::with_capacity(16);
-            write_buf.put_u8(42);
-            socket.write_all_buf(&mut write_buf).await.unwrap();
-
-            let mut read_buf = BytesMut::with_capacity(16);
-            socket.read_buf(&mut read_buf).await.unwrap();
-
-            assert_eq!(read_buf[0], 77);
-        });
-
-        runtime.block_on(f).unwrap();
     }
 
     #[test]
     fn tcp_stream() {
         init_logger();
         let runtime = Runtime::new();
-        let addr1 = "10.0.0.1:1".parse::<SocketAddr>().unwrap();
-        let addr2 = "10.0.0.2:1".parse::<SocketAddr>().unwrap();
-        let node1 = runtime.create_node().ip(addr1.ip()).build();
-        let node2 = runtime.create_node().ip(addr2.ip()).build();
+        runtime.block_on(async move {
+            let addr1 = "10.0.0.1:1".parse::<SocketAddr>().unwrap();
+            let addr2 = "10.0.0.2:1".parse::<SocketAddr>().unwrap();
+            let handle = Handle::current();
+            let node1 = handle.create_node().ip(addr1.ip()).build();
+            let node2 = handle.create_node().ip(addr2.ip()).build();
 
-        let listen_barrier = Arc::new(Barrier::new(2));
-        let listen_barrier_ = listen_barrier.clone();
+            let listen_barrier = Arc::new(Barrier::new(2));
+            let listen_barrier_ = listen_barrier.clone();
 
-        let join_barrier = Arc::new(Barrier::new(2));
-        let join_barrier_ = join_barrier.clone();
+            let join_barrier = Arc::new(Barrier::new(2));
+            let join_barrier_ = join_barrier.clone();
 
-        node1.spawn(async move {
-            let listener = TcpListener::bind(addr1).await.unwrap();
+            node1.spawn(async move {
+                let listener = TcpListener::bind(addr1).await.unwrap();
 
-            // forget the first listener and rebind to make sure that ports are released and
-            // rebindable
-            std::mem::drop(listener);
-            let listener = TcpListener::bind(addr1).await.unwrap();
+                // forget the first listener and rebind to make sure that ports are released and
+                // rebindable
+                std::mem::drop(listener);
+                let listener = TcpListener::bind(addr1).await.unwrap();
 
-            listen_barrier.wait().await;
+                listen_barrier.wait().await;
 
-            let (socket, _) = listener.accept().await.unwrap();
+                let (socket, _) = listener.accept().await.unwrap();
 
-            let (read, write) = socket.into_split();
+                let (read, write) = socket.into_split();
 
-            let read_fut = test_stream_read(read);
-            let write_fut = test_stream_write(write);
+                // keep the underlying stream alive until after the read and write futures have
+                // joined, or else the other end will fail with a ConnectionReset error.
+                let _stream = read.inner.clone();
 
-            join!(read_fut, write_fut);
+                let read_fut = test_stream_read(read);
+                let write_fut = test_stream_write(write);
 
-            join_barrier.wait().await;
+                join!(read_fut, write_fut);
+
+                join_barrier.wait().await;
+            });
+
+            let f = node2.spawn(async move {
+                listen_barrier_.wait().await;
+
+                let socket = TcpStream::connect(addr1).await.unwrap();
+                let (read, write) = socket.into_split();
+
+                // keep the underlying stream alive until after the read and write futures have
+                // joined, or else the other end will fail with a ConnectionReset error.
+                let _stream = read.inner.clone();
+
+                let read_fut = test_stream_read(read);
+                let write_fut = test_stream_write(write);
+
+                join!(read_fut, write_fut);
+
+                join_barrier_.wait().await;
+            });
+
+            f.await.unwrap();
         });
+    }
 
-        let f = node2.spawn(async move {
-            listen_barrier_.wait().await;
+    #[test]
+    fn tcp_test_failed_connect() {
+        init_logger();
+        let runtime = Runtime::new();
 
-            let socket = TcpStream::connect(addr1).await.unwrap();
-            let (read, write) = socket.into_split();
+        runtime.block_on(async move {
+            let addr1 = "10.0.0.1:1".parse::<SocketAddr>().unwrap();
+            let addr2 = "10.0.0.2:1".parse::<SocketAddr>().unwrap();
+            let handle = Handle::current();
+            let node1 = handle.create_node().ip(addr1.ip()).build();
+            let node2 = handle.create_node().ip(addr2.ip()).build();
 
-            let read_fut = test_stream_read(read);
-            let write_fut = test_stream_write(write);
+            let join_barrier = Arc::new(Barrier::new(2));
+            let join_barrier_ = join_barrier.clone();
 
-            join!(read_fut, write_fut);
+            node1.spawn(async move {
+                join_barrier.wait().await;
+            });
 
-            join_barrier_.wait().await;
+            let f = node2.spawn(async move {
+                let err = TcpStream::connect(addr1).await.unwrap_err();
+                assert_eq!(err.kind(), io::ErrorKind::ConnectionRefused);
+                join_barrier_.wait().await;
+            });
+
+            f.await.unwrap();
         });
+    }
 
-        runtime.block_on(f).unwrap();
+    #[test]
+    fn tcp_test_server_hangup() {
+        init_logger();
+        let runtime = Runtime::new();
+
+        runtime.block_on(async move {
+            let addr1 = "10.0.0.1:1".parse::<SocketAddr>().unwrap();
+            let addr2 = "10.0.0.2:1".parse::<SocketAddr>().unwrap();
+            let handle = Handle::current();
+            let node1 = handle.create_node().ip(addr1.ip()).build();
+            let node2 = handle.create_node().ip(addr2.ip()).build();
+
+            let listen_barrier = Arc::new(Barrier::new(2));
+            let listen_barrier_ = listen_barrier.clone();
+
+            let join_barrier = Arc::new(Barrier::new(2));
+            let join_barrier_ = join_barrier.clone();
+
+            node1.spawn(async move {
+                debug!("server begin");
+                let listener = TcpListener::bind(addr1).await.unwrap();
+                listen_barrier.wait().await;
+
+                let (mut socket, _) = listener.accept().await.unwrap();
+
+                timeout(Duration::from_secs(1), async move {
+                    loop {
+                        let next = socket.read_u64().await.unwrap();
+                        trace!("read {}", next);
+                    }
+                })
+                .await
+                .unwrap_err();
+                debug!("server exited");
+
+                join_barrier.wait().await;
+            });
+
+            let f = node2.spawn(async move {
+                listen_barrier_.wait().await;
+
+                let mut socket = TcpStream::connect(addr1).await.unwrap();
+
+                timeout(Duration::from_secs(2), async move {
+                    debug!("client begun");
+                    for i in 0.. {
+                        trace!("writing {}", i);
+                        if let Err(err) = socket.write_u64(i).await {
+                            debug!("client err {}", err);
+                            assert_eq!(err.kind(), io::ErrorKind::ConnectionReset);
+                            break;
+                        }
+                        sleep(Duration::from_millis(100)).await;
+                    }
+                    debug!("client exited");
+                })
+                .await
+                .expect("write loop should have exited due to ConnectionReset");
+
+                join_barrier_.wait().await;
+            });
+
+            f.await.unwrap();
+        });
+    }
+
+    #[test]
+    fn tcp_test_client_hangup() {
+        init_logger();
+        let runtime = Runtime::new();
+
+        runtime.block_on(async move {
+            let addr1 = "10.0.0.1:1".parse::<SocketAddr>().unwrap();
+            let addr2 = "10.0.0.2:1".parse::<SocketAddr>().unwrap();
+            let handle = Handle::current();
+            let node1 = handle.create_node().ip(addr1.ip()).build();
+            let node2 = handle.create_node().ip(addr2.ip()).build();
+
+            let listen_barrier = Arc::new(Barrier::new(2));
+            let listen_barrier_ = listen_barrier.clone();
+
+            let join_barrier = Arc::new(Barrier::new(2));
+            let join_barrier_ = join_barrier.clone();
+
+            node1.spawn(async move {
+                debug!("server begin");
+                let listener = TcpListener::bind(addr1).await.unwrap();
+                listen_barrier.wait().await;
+
+                let (mut socket, _) = listener.accept().await.unwrap();
+
+                timeout(Duration::from_secs(2), async move {
+                    debug!("server write begun");
+                    for i in 0.. {
+                        trace!("writing {}", i);
+                        if let Err(err) = socket.write_u64(i).await {
+                            assert_eq!(err.kind(), io::ErrorKind::ConnectionReset);
+                            break;
+                        }
+                        sleep(Duration::from_millis(100)).await;
+                    }
+                    debug!("client exited");
+                })
+                .await
+                .expect("write loop should have exited due to ConnectionReset");
+
+                debug!("server exited");
+
+                join_barrier.wait().await;
+            });
+
+            let f = node2.spawn(async move {
+                listen_barrier_.wait().await;
+
+                let mut socket = TcpStream::connect(addr1).await.unwrap();
+
+                timeout(Duration::from_secs(1), async move {
+                    loop {
+                        let next = socket.read_u64().await.unwrap();
+                        trace!("read {}", next);
+                    }
+                })
+                .await
+                .unwrap_err();
+
+                join_barrier_.wait().await;
+            });
+
+            f.await.unwrap();
+        });
+    }
+
+    #[test]
+    fn tcp_test_client_hangup_read() {
+        init_logger();
+        let runtime = Runtime::new();
+
+        runtime.block_on(async move {
+            let addr1 = "10.0.0.1:1".parse::<SocketAddr>().unwrap();
+            let addr2 = "10.0.0.2:1".parse::<SocketAddr>().unwrap();
+            let handle = Handle::current();
+            let node1 = handle.create_node().ip(addr1.ip()).build();
+            let node2 = handle.create_node().ip(addr2.ip()).build();
+
+            let listen_barrier = Arc::new(Barrier::new(2));
+            let listen_barrier_ = listen_barrier.clone();
+
+            let join_barrier = Arc::new(Barrier::new(2));
+            let join_barrier_ = join_barrier.clone();
+
+            node1.spawn(async move {
+                debug!("server begin");
+                let listener = TcpListener::bind(addr1).await.unwrap();
+                listen_barrier.wait().await;
+
+                let (socket, _) = listener.accept().await.unwrap();
+
+                sleep(Duration::from_secs(1)).await;
+
+                debug!("server finished");
+                drop(socket);
+
+                join_barrier.wait().await;
+            });
+
+            let f = node2.spawn(async move {
+                listen_barrier_.wait().await;
+
+                let mut socket = TcpStream::connect(addr1).await.unwrap();
+
+                debug!("client connect");
+
+                assert_eq!(
+                    socket.read_u64().await.unwrap_err().kind(),
+                    io::ErrorKind::ConnectionReset
+                );
+
+                debug!("client finished");
+
+                join_barrier_.wait().await;
+            });
+
+            f.await.unwrap();
+        });
+    }
+
+    #[test]
+    fn tcp_test_server_hangup_read() {
+        init_logger();
+        let runtime = Runtime::new();
+
+        runtime.block_on(async move {
+            let addr1 = "10.0.0.1:1".parse::<SocketAddr>().unwrap();
+            let addr2 = "10.0.0.2:1".parse::<SocketAddr>().unwrap();
+            let handle = Handle::current();
+            let node1 = handle.create_node().ip(addr1.ip()).build();
+            let node2 = handle.create_node().ip(addr2.ip()).build();
+
+            let listen_barrier = Arc::new(Barrier::new(2));
+            let listen_barrier_ = listen_barrier.clone();
+
+            let join_barrier = Arc::new(Barrier::new(2));
+            let join_barrier_ = join_barrier.clone();
+
+            node1.spawn(async move {
+                debug!("server begin");
+                let listener = TcpListener::bind(addr1).await.unwrap();
+                listen_barrier.wait().await;
+
+                let (mut socket, _) = listener.accept().await.unwrap();
+
+                assert_eq!(
+                    socket.read_u64().await.unwrap_err().kind(),
+                    io::ErrorKind::ConnectionReset
+                );
+
+                debug!("server finished");
+
+                join_barrier.wait().await;
+            });
+
+            let f = node2.spawn(async move {
+                listen_barrier_.wait().await;
+
+                let socket = TcpStream::connect(addr1).await.unwrap();
+
+                debug!("client connect");
+
+                sleep(Duration::from_secs(1)).await;
+
+                debug!("client finished");
+                drop(socket);
+
+                join_barrier_.wait().await;
+            });
+
+            f.await.unwrap();
+        });
     }
 }
