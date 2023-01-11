@@ -60,9 +60,6 @@ use crate::{
 /// network module
 #[allow(missing_docs)]
 pub mod network;
-#[cfg(feature = "rpc")]
-#[cfg_attr(docsrs, doc(cfg(feature = "rpc")))]
-pub mod rpc;
 
 /// Network simulator.
 #[cfg_attr(docsrs, doc(cfg(msim)))]
