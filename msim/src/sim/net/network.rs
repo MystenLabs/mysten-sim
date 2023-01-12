@@ -199,11 +199,11 @@ impl Network {
         Ok(addr)
     }
 
-    pub fn register_tcp_id(&mut self, node: NodeId, tcp_id: u32) {
-        trace!("registering tcp id {} for node {}", tcp_id, node);
+    pub fn register_tcp_id(&mut self, node_id: NodeId, tcp_id: u32) {
+        trace!("registering tcp id {} for node {}", tcp_id, node_id);
         assert!(
             self.nodes
-                .get_mut(&node)
+                .get_mut(&node_id)
                 .unwrap()
                 .live_tcp_ids
                 .insert(tcp_id),
