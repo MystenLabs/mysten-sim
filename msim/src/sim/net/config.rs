@@ -219,8 +219,11 @@ impl PacketLossConfig {
 #[cfg_attr(docsrs, doc(cfg(msim)))]
 #[derive(Debug, Clone, Default)]
 pub struct NetworkConfig {
-    /// Possibility of packet loss.
+    /// Possibility of packet loss (for UDP connections only).
     pub packet_loss: PacketLossConfig,
+
+    /// Packet loss for tcp causes the connection to be reset, hence has a different config.
+    pub tcp_packet_loss: PacketLossConfig,
 
     /// Latency configuraion
     pub latency: LatencyConfig,
