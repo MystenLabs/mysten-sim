@@ -514,10 +514,9 @@ pub fn init_logger() {
     static LOGGER_INIT: Once = Once::new();
     LOGGER_INIT.call_once(tracing_subscriber::fmt::init);
 }
-
 #[cfg(test)]
 mod tests {
-    use super::{init_logger, start_watchdog_with};
+    use super::start_watchdog_with;
     use crate::{runtime::Runtime, time};
     use std::{
         sync::{Arc, RwLock},
@@ -528,7 +527,11 @@ mod tests {
 
     #[test]
     fn test_watchdog() {
-        init_logger();
+        // This test will panic if logging is enabled since the logging happens outside of a
+        // runtime. To debug this test, uncomment init_logger(), and run the test with
+        // MSIM_USE_REAL_WALLCLOCK=1 in the env.
+        //super::init_logger();
+
         let runtime = Arc::new(RwLock::new(Some(Runtime::new())));
         let (_tx, rx) = channel();
 

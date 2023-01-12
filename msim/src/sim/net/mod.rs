@@ -1269,8 +1269,20 @@ impl Drop for Endpoint {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{plugin::simulator, runtime::init_logger, runtime::Runtime, time::*};
+    use crate::{
+        net::network::Payload,
+        plugin::simulator,
+        runtime::{init_logger, Handle, Runtime},
+        time::*,
+    };
     use tokio::sync::Barrier;
+
+    macro_rules! payload {
+        ($e: expr) => {{
+            let v: Vec<u8> = $e;
+            Payload::new_udp(Box::new(v))
+        }};
+    }
 
     #[test]
     fn send_recv() {
@@ -1286,10 +1298,10 @@ mod tests {
             let net = Endpoint::bind(addr1).await.unwrap();
             barrier_.wait().await;
 
-            net.send_to(addr2, 1, &[1]).await.unwrap();
+            net.send_to(addr2, 1, payload!(vec![1])).await.unwrap();
 
             sleep(Duration::from_secs(1)).await;
-            net.send_to(addr2, 2, &[2]).await.unwrap();
+            net.send_to(addr2, 2, payload!(vec![2])).await.unwrap();
         });
 
         let f = node2.spawn(async move {
@@ -1325,7 +1337,7 @@ mod tests {
             let net = Endpoint::bind(addr1).await.unwrap();
             barrier_.wait().await;
 
-            net.send_to(addr2, 1, &[1]).await.unwrap();
+            net.send_to(addr2, 1, payload!(vec![1])).await.unwrap();
         });
 
         let f = node2.spawn(async move {
@@ -1439,8 +1451,12 @@ mod tests {
             let ep = Endpoint::bind("127.0.0.1:1").await.unwrap();
             barrier.wait().await;
 
-            ep.send_to("10.0.0.1:1", 1, &[1]).await.unwrap();
-            ep.send_to("10.0.0.1:2", 1, &[1]).await.unwrap();
+            ep.send_to("10.0.0.1:1", 1, payload!(vec![1]))
+                .await
+                .unwrap();
+            ep.send_to("10.0.0.1:2", 1, payload!(vec![1]))
+                .await
+                .unwrap();
         });
         runtime.block_on(f1).unwrap();
         runtime.block_on(f2).unwrap();
@@ -1465,7 +1481,9 @@ mod tests {
             let (len, from) = ep.recv_from(1, &mut buf).await.unwrap();
             assert_eq!(&buf[..len], b"ping");
 
-            ep.send_to(from, 1, b"pong").await.unwrap();
+            ep.send_to(from, 1, payload!(b"pong".to_vec()))
+                .await
+                .unwrap();
         });
 
         let f = node2.spawn(async move {
@@ -1473,7 +1491,7 @@ mod tests {
             let ep = Endpoint::connect(addr1).await.unwrap();
             assert_eq!(ep.peer_addr().unwrap(), addr1);
 
-            ep.send(1, b"ping").await.unwrap();
+            ep.send(1, payload!(b"ping".to_vec())).await.unwrap();
 
             let mut buf = vec![0; 0x10];
             let len = ep.recv(1, &mut buf).await.unwrap();
@@ -1489,27 +1507,29 @@ mod tests {
 
         init_logger();
         let runtime = Runtime::new();
-        let addr1 = "10.0.0.1:1".parse::<SocketAddr>().unwrap();
-        let node1 = runtime.create_node().ip(addr1.ip()).build();
+        runtime.block_on(async move {
+            let addr1 = "10.0.0.1:1".parse::<SocketAddr>().unwrap();
+            let node1 = Handle::current().create_node().ip(addr1.ip()).build();
 
-        let f = node1.spawn(async move {
-            let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
-            let addr = listener.local_addr().unwrap();
+            let f = node1.spawn(async move {
+                let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+                let addr = listener.local_addr().unwrap();
 
-            let sender = TcpStream::connect(addr).unwrap();
-            let incoming = listener.accept().unwrap();
+                let sender = TcpStream::connect(addr).unwrap();
+                let incoming = listener.accept().unwrap();
 
-            assert_eq!("127.0.0.1:32768", format!("{:?}", addr));
-            assert_eq!(
-                "127.0.0.1:32769",
-                format!("{:?}", sender.local_addr().unwrap())
-            );
-            assert_eq!("127.0.0.1:32769", format!("{:?}", incoming.1));
-            assert_eq!(
-                "127.0.0.1:32770",
-                format!("{:?}", incoming.0.local_addr().unwrap())
-            );
+                assert_eq!("127.0.0.1:32768", format!("{:?}", addr));
+                assert_eq!(
+                    "127.0.0.1:32769",
+                    format!("{:?}", sender.local_addr().unwrap())
+                );
+                assert_eq!("127.0.0.1:32769", format!("{:?}", incoming.1));
+                assert_eq!(
+                    "127.0.0.1:32770",
+                    format!("{:?}", incoming.0.local_addr().unwrap())
+                );
+            });
+            f.await.unwrap();
         });
-        runtime.block_on(f).unwrap();
     }
 }
