@@ -151,6 +151,16 @@ impl TimeHandle {
         }
     }
 
+    /// Require a `Future` to complete before the specified duration has elapsed.
+    // TODO: make it Send
+    pub fn timeout_at<T: Future>(&self, deadline: Instant, future: T) -> Timeout<T> {
+        let delay = self.sleep_until(deadline);
+        Timeout {
+            value: future,
+            delay,
+        }
+    }
+
     pub(crate) fn add_timer(
         &self,
         deadline: Instant,
@@ -225,10 +235,14 @@ pub async fn advance(_duration: Duration) {
     unimplemented!("cannot advance clock in simulation - use sleep() instead");
 }
 
-/// Require a `Future` to complete before the specified duration has elapsed.
+/// Require a `Future` to complete before the specified duration has elapsed. If the provided
+/// duration is very far in the future, method will use the maximum allowed time.
 pub fn timeout<T: Future>(duration: Duration, future: T) -> Timeout<T> {
     let handle = TimeHandle::current();
-    handle.timeout(duration, future)
+
+    // we follow the approach that tokio uses as well
+    let deadline = handle.now_instant().checked_add(duration).unwrap_or(Instant::far_future());
+    handle.timeout_at(deadline, future)
 }
 
 /// Require a `Future` to complete before the specified deadline.
