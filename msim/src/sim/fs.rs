@@ -36,6 +36,10 @@ impl Simulator for FsSim {
     fn reset_node(&self, id: NodeId) {
         self.power_fail(id);
     }
+
+    fn delete_node(&self, id: NodeId) {
+        self.handles.lock().unwrap().remove(&id);
+    }
 }
 
 impl FsSim {

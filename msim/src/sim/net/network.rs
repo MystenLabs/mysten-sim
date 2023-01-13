@@ -10,6 +10,7 @@ use std::{
     task::{Context, Waker},
 };
 
+use tap::TapOptional;
 use tracing::*;
 
 /// A simulated network.
@@ -106,6 +107,32 @@ impl Network {
         let node = self.nodes.get_mut(&id).expect("node not found");
         // close all sockets
         node.sockets.clear();
+    }
+
+    pub fn delete_node(&mut self, id: NodeId) {
+        debug!("delete: {id}");
+        let node = self.nodes.remove(&id).expect("node not found");
+
+        if let Some(ip) = &node.ip {
+            self.addr_to_node.remove(ip);
+        }
+        self.clogged_node.remove(&id);
+
+        let to_remove: Vec<_> = self
+            .clogged_link
+            .iter()
+            .filter_map(|(a, b)| {
+                if *a == id || *b == id {
+                    Some((*a, *b))
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        for k in &to_remove {
+            self.clogged_link.remove(k);
+        }
     }
 
     pub fn set_ip(&mut self, id: NodeId, ip: IpAddr) {
@@ -227,20 +254,31 @@ impl Network {
         );
 
         // wake the remote end in case it is waiting on a read.
+        let Some(node_id) = &self.get_node_for_addr(&remote_addr.ip()) else {
+            // node may have been deleted
+            debug!("No node found for {remote_addr}");
+            return;
+        };
+
         if let Some(socket) = self
             .nodes
-            .get_mut(&self.get_node_for_addr(&remote_addr.ip()).unwrap())
-            .unwrap()
-            .sockets
-            .get(&remote_addr.port())
+            .get_mut(node_id)
+            .map(|node| node.sockets.get(&remote_addr.port()))
+            .tap_none(|| debug!("No node found for {node_id}"))
+            .flatten()
         {
             socket.lock().unwrap().wake_tcp_connection(tcp_id);
         }
     }
 
     pub fn is_tcp_session_live(&self, peer: &SocketAddr, tcp_id: u32) -> bool {
-        let node_id = self.get_node_for_addr(&peer.ip()).expect("no such node");
-        self.nodes[&node_id].live_tcp_ids.contains(&tcp_id)
+        if let Some(node_id) = self.get_node_for_addr(&peer.ip()) {
+            self.nodes[&node_id].live_tcp_ids.contains(&tcp_id)
+        } else {
+            // the node does not exist, it may have been killed / restarted.
+            debug!("could not find node for id: {tcp_id}");
+            false
+        }
     }
 
     pub fn signal_connect(&self, src: SocketAddr, dst: SocketAddr) -> bool {
@@ -345,8 +383,8 @@ impl Network {
             }
         }
 
-        let ep = match node.sockets.get(&dst.port()) {
-            Some(ep) => ep.clone(),
+        let mailbox = match node.sockets.get(&dst.port()) {
+            Some(mailbox) => Arc::downgrade(mailbox),
             None => {
                 trace!("destination port not available: {dst}");
                 return Err(io::Error::new(
@@ -367,9 +405,15 @@ impl Network {
             .get_latency(&mut self.rand, node_id, dst_node);
         trace!("delay: {latency:?}");
         self.time
-            .add_timer(self.time.now_instant() + latency, move || {
-                trace!("deliver: {node_id} {src} -> {dst}, tag={tag:x}");
-                ep.lock().unwrap().deliver(msg);
+            .add_timer_for_node(dst_node, self.time.now_instant() + latency, move || {
+                if let Some(mailbox) = mailbox.upgrade() {
+                    trace!(
+                        "deliver: {src}(node: {node_id}) -> {dst}(node: {dst_node}), tag={tag:x}"
+                    );
+                    mailbox.lock().unwrap().deliver(msg);
+                } else {
+                    trace!("deliver: mailbox was destroyed before delivery");
+                }
             });
         self.stat.msg_count += 1;
 

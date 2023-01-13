@@ -23,6 +23,9 @@ pub trait Simulator: Any + Send + Sync + DowncastSync {
 
     /// Reset a node.
     fn reset_node(&self, _id: NodeId) {}
+
+    /// Delete a node.
+    fn delete_node(&self, _id: NodeId) {}
 }
 
 impl_downcast!(sync Simulator);
