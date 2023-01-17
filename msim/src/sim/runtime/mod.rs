@@ -523,13 +523,14 @@ pub fn is_current_task_killed() -> bool {
     if let Some(task) = context::try_current_task() {
         if task.is_killed() {
             trace!("current task is killed");
-            return true;
+            true
+        } else {
+            false
         }
     } else {
         trace!("no current task");
-        return true;
+        true
     }
-    return false;
 }
 
 /// Return from the current function if the current task is killed, or there is no current task.
