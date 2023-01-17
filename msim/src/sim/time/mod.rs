@@ -3,8 +3,7 @@
 //!
 
 use crate::rand::{GlobalRng, Rng};
-use crate::{define_bypass, define_sys_interceptor};
-use naive_timer::Timer;
+use crate::{context, define_bypass, define_sys_interceptor, task::NodeId};
 #[doc(no_inline)]
 pub use std::time::Duration;
 use std::{
@@ -23,6 +22,9 @@ pub mod error;
 mod instant;
 mod interval;
 mod sleep;
+mod timer;
+
+use timer::Timer;
 
 pub use self::instant::Instant;
 pub use self::interval::{interval, interval_at, Interval, MissedTickBehavior};
@@ -103,6 +105,20 @@ pub struct TimeHandle {
 }
 
 impl TimeHandle {
+    /// Disable node, cancel all pending timers.
+    pub fn disable_node_and_cancel_timers(&self, node_id: NodeId) {
+        let mut timer = self.timer.lock().unwrap();
+        let events = timer.disable_node_and_remove_events(node_id);
+        // must drop lock before events to avoid deadlock.
+        drop(timer);
+        drop(events);
+    }
+
+    /// Enable a previously disabled node.
+    pub fn enable_node(&self, node_id: NodeId) {
+        self.timer.lock().unwrap().enable_node(node_id);
+    }
+
     /// Returns a `TimeHandle` view over the currently running Runtime.
     pub fn current() -> Self {
         crate::context::current(|h| h.time.clone())
@@ -156,8 +172,19 @@ impl TimeHandle {
         deadline: Instant,
         callback: impl FnOnce() + Send + Sync + 'static,
     ) {
+        self.add_timer_for_node(context::current_node(), deadline, callback);
+    }
+
+    pub(crate) fn add_timer_for_node(
+        &self,
+        node_id: NodeId,
+        deadline: Instant,
+        callback: impl FnOnce() + Send + Sync + 'static,
+    ) {
         let mut timer = self.timer.lock().unwrap();
-        timer.add(deadline - self.clock.base_instant(), |_| callback());
+        timer.add(node_id, deadline - self.clock.base_instant(), |_| {
+            callback()
+        });
     }
 
     /// Schedule waker.wake() in the future.

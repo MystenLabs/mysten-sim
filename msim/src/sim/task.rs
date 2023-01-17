@@ -8,6 +8,7 @@ use super::{
 use crate::assert_send_sync;
 use async_task::{FallibleTask, Runnable};
 use erasable::{ErasablePtr, ErasedPtr};
+use futures::pin_mut;
 use rand::Rng;
 use std::{
     collections::HashMap,
@@ -28,6 +29,7 @@ use tracing::{error_span, trace, Span};
 
 pub use tokio::msim_adapter::{join_error, runtime_task};
 pub use tokio::task::{yield_now, JoinError};
+pub use tokio::{select, sync::watch};
 
 pub mod join_set;
 pub use join_set::JoinSet;
@@ -68,10 +70,23 @@ pub(crate) struct TaskInfo {
     /// A flag indicating that the task should be paused.
     paused: AtomicBool,
     /// A flag indicating that the task should no longer be executed.
-    killed: AtomicBool,
+    killed: watch::Sender<bool>,
 }
 
 impl TaskInfo {
+    fn new(node_id: NodeId, name: String) -> Self {
+        let span = error_span!(parent: None, "node", id = %node_id.0, name);
+        TaskInfo {
+            inner: Arc::new(NodeInfo {
+                node: node_id,
+                name,
+                span,
+            }),
+            paused: AtomicBool::new(false),
+            killed: watch::channel(false).0,
+        }
+    }
+
     pub fn node(&self) -> NodeId {
         self.inner.node
     }
@@ -82,6 +97,10 @@ impl TaskInfo {
 
     pub fn span(&self) -> Span {
         self.inner.span.clone()
+    }
+
+    pub fn is_killed(&self) -> bool {
+        *self.killed.borrow()
     }
 }
 
@@ -116,15 +135,7 @@ impl Executor {
     pub fn block_on<F: Future>(&self, future: F) -> F::Output {
         // push the future into ready queue.
         let sender = self.handle.sender.clone();
-        let info = Arc::new(TaskInfo {
-            inner: Arc::new(NodeInfo {
-                node: NodeId(0),
-                name: "main".into(),
-                span: error_span!(parent: None, "node", id = 0, "main"),
-            }),
-            paused: AtomicBool::new(false),
-            killed: AtomicBool::new(false),
-        });
+        let info = Arc::new(TaskInfo::new(NodeId(0), "main".into()));
         let (runnable, mut task) = unsafe {
             // Safety: The schedule is not Sync,
             // the task's Waker must be used and dropped on the original thread.
@@ -158,7 +169,7 @@ impl Executor {
     /// Drain all tasks from ready queue and run them.
     fn run_all_ready(&self) {
         while let Ok((runnable, info)) = self.queue.try_recv_random(&self.rand) {
-            if info.killed.load(Ordering::SeqCst) {
+            if *info.killed.borrow() {
                 // killed task: must enter the task before dropping it, so that
                 // Drop impls can run.
                 let _guard = crate::context::enter_task(info);
@@ -221,25 +232,21 @@ struct Node {
 impl TaskHandle {
     /// Kill all tasks of the node.
     pub fn kill(&self, id: NodeId) {
+        TimeHandle::current().disable_node_and_cancel_timers(id);
+
         let mut nodes = self.nodes.lock().unwrap();
         let node = nodes.get_mut(&id).expect("node not found");
         node.paused.clear();
-        let new_info = Arc::new(TaskInfo {
-            inner: Arc::new(NodeInfo {
-                node: id,
-                name: node.info.name(),
-                span: error_span!(parent: None, "node", id = %id.0, name = &node.info.name()),
-            }),
-            paused: AtomicBool::new(false),
-            killed: AtomicBool::new(false),
-        });
+        let new_info = Arc::new(TaskInfo::new(id, node.info.name()));
         let old_info = std::mem::replace(&mut node.info, new_info);
-        old_info.killed.store(true, Ordering::SeqCst);
+        old_info.killed.send_replace(true);
     }
 
     /// Kill all tasks of the node and restart the initial task.
     pub fn restart(&self, id: NodeId) {
         self.kill(id);
+        TimeHandle::current().enable_node(id);
+
         let nodes = self.nodes.lock().unwrap();
         let node = nodes.get(&id).expect("node not found");
         if let Some(init) = &node.init {
@@ -277,15 +284,7 @@ impl TaskHandle {
     ) -> TaskNodeHandle {
         let id = NodeId(self.next_node_id.fetch_add(1, Ordering::SeqCst));
         let name = name.unwrap_or_else(|| format!("node-{}", id.0));
-        let info = Arc::new(TaskInfo {
-            inner: Arc::new(NodeInfo {
-                node: id,
-                name: name.clone(),
-                span: error_span!(parent: None, "node", id = %id.0, name),
-            }),
-            paused: AtomicBool::new(false),
-            killed: AtomicBool::new(false),
-        });
+        let info = Arc::new(TaskInfo::new(id, name));
         let handle = TaskNodeHandle {
             sender: self.sender.clone(),
             info: info.clone(),
@@ -300,6 +299,12 @@ impl TaskHandle {
         };
         self.nodes.lock().unwrap().insert(id, node);
         handle
+    }
+
+    pub fn delete_node(&self, id: NodeId) {
+        self.kill(id);
+        let mut nodes = self.nodes.lock().unwrap();
+        assert!(nodes.remove(&id).is_some());
     }
 
     /// Get the node handle.
@@ -351,6 +356,31 @@ impl TaskNodeHandle {
     {
         let sender = self.sender.clone();
         let info = self.info.clone();
+        let mut killed_rx = info.killed.subscribe();
+
+        let future = async move {
+            pin_mut!(future);
+            loop {
+                select! {
+                    _ = killed_rx.changed() => {
+                        if *killed_rx.borrow() {
+                            // when a cancelled task is run by run_all_ready(), it is dropped rather
+                            // than being executed. Therefore this should never run. However, we must
+                            // poll killed_rx in order to force this task to wake up when its node is
+                            // killed. (Otherwise the task will not be dropped until its next
+                            // scheduled wakeup, which may be never if it is listening for network
+                            // messages).
+                            panic!("killed task must not run!");
+                        }
+                    }
+
+                    output = &mut future => {
+                        break output;
+                    }
+                }
+            }
+        };
+
         let (runnable, task) = unsafe {
             // Safety: The schedule is not Sync,
             // the task's Waker must be used and dropped on the original thread.

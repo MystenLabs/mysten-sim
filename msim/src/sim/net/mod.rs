@@ -54,6 +54,7 @@ use self::network::{Network, Payload};
 use crate::{
     define_bypass, define_sys_interceptor, plugin,
     rand::{GlobalRng, Rng},
+    return_if_killed,
     task::NodeId,
     time::{Duration, TimeHandle},
 };
@@ -69,7 +70,7 @@ pub struct NetSim {
     host_state: Mutex<HostNetworkState>,
     rand: GlobalRng,
     time: TimeHandle,
-    next_tcp_id_map: Mutex<HashMap<NodeId, u32>>,
+    next_tcp_id_map: Mutex<HashMap<IpAddr, u32>>,
 }
 
 #[derive(Debug)]
@@ -114,6 +115,10 @@ impl From<RawFd> for OwnedFd {
 
 impl Drop for OwnedFd {
     fn drop(&mut self) {
+        // when the current node is killed, the socket corresponding to this filehandle may have
+        // been destroyed already. This would cause the close intercepter to call
+        // `bypass_close()`, which can lead to a double close.
+        return_if_killed!();
         unsafe {
             close(self.0);
         }
@@ -176,6 +181,23 @@ impl HostNetworkState {
             .get_mut(&(node_id, fd))
             .ok_or_else(|| io::Error::new(io::ErrorKind::NotConnected, "no such socket"))?;
         Ok(cb(socket))
+    }
+
+    fn delete_node(&mut self, id: NodeId) {
+        let to_remove: Vec<_> = self
+            .sockets
+            .iter()
+            .filter_map(|((node, fd), _)| {
+                if *node == id {
+                    Some((*node, *fd))
+                } else {
+                    None
+                }
+            })
+            .collect();
+        for k in &to_remove {
+            self.sockets.remove(k);
+        }
     }
 }
 
@@ -852,6 +874,10 @@ impl plugin::Simulator for NetSim {
     fn reset_node(&self, id: NodeId) {
         self.reset_node(id);
     }
+
+    fn delete_node(&self, id: NodeId) {
+        self.delete_node(id);
+    }
 }
 
 impl NetSim {
@@ -872,6 +898,19 @@ impl NetSim {
     pub fn reset_node(&self, id: NodeId) {
         let mut network = self.network.lock().unwrap();
         network.reset_node(id);
+    }
+
+    /// Delete a node.
+    pub fn delete_node(&self, id: NodeId) {
+        debug!("delete_node {id}");
+        let mut network = self.network.lock().unwrap();
+        network.delete_node(id);
+
+        let mut host_state = self.host_state.lock().unwrap();
+        host_state.delete_node(id);
+
+        // We do not reset self.next_tcp_id_map - we do not want to re-use tcp ids after a node is
+        // restarted.
     }
 
     /// Set IP address of a node.
@@ -917,13 +956,14 @@ impl NetSim {
         self.time.sleep(delay).await;
     }
 
-    /// Get the next unused tcp id for this node.
-    pub fn next_tcp_id(&self, node: NodeId) -> u32 {
+    /// Get the next unused tcp id for this ip address.
+    pub fn next_tcp_id(&self, ip: IpAddr) -> u32 {
         let mut map = self.next_tcp_id_map.lock().unwrap();
-        match map.entry(node) {
+        match map.entry(ip) {
             Entry::Occupied(mut cur) => {
                 let cur = cur.get_mut();
-                *cur = cur.wrapping_add(1);
+                // limited to 2^32 - 1 tcp sessions per ip per simulation run.
+                *cur = cur.checked_add(1).unwrap();
                 *cur
             }
             Entry::Vacant(e) => {
@@ -1032,7 +1072,7 @@ impl Endpoint {
 
     /// Allocate a new tcp id number for this node. Ids are never reused.
     pub fn allocate_local_tcp_id(&self) -> u32 {
-        let id = self.net.next_tcp_id(self.node);
+        let id = self.net.next_tcp_id(self.addr.ip());
         self.live_tcp_ids.lock().unwrap().insert(id);
         self.net
             .network
@@ -1256,6 +1296,8 @@ impl Endpoint {
 
 impl Drop for Endpoint {
     fn drop(&mut self) {
+        return_if_killed!();
+
         // all tcp sessions should already be deregistered.
         assert!(self.live_tcp_ids.get_mut().unwrap().is_empty());
 

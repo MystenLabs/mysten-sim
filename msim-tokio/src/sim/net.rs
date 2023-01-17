@@ -21,6 +21,7 @@ use msim::net::{
     network::{Payload, PayloadType},
     try_get_endpoint_from_socket, Endpoint, OwnedFd,
 };
+use msim::return_if_killed;
 use real_tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 
 pub use super::udp::*;
@@ -311,6 +312,8 @@ impl TcpState {
 
 impl Drop for TcpState {
     fn drop(&mut self) {
+        return_if_killed!();
+
         self.ep
             .deregister_tcp_id(&self.remote_sock, self.local_tcp_id);
     }

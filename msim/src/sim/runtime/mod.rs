@@ -18,7 +18,7 @@ use std::{
 };
 use tokio::sync::oneshot;
 
-use tracing::{debug, error, warn};
+use tracing::{debug, error, trace, warn};
 
 pub(crate) mod context;
 
@@ -324,6 +324,15 @@ impl Handle {
         }
     }
 
+    /// Kill all tasks and delete the node.
+    pub fn delete_node(&self, id: NodeId) {
+        debug!("delete_node {id}");
+        self.task.delete_node(id);
+        for sim in self.sims.lock().unwrap().values() {
+            sim.delete_node(id);
+        }
+    }
+
     /// Pause the execution of a node.
     pub fn pause(&self, id: NodeId) {
         self.task.pause(id);
@@ -508,12 +517,41 @@ impl Future for NodeHandle {
     }
 }
 
+/// Checks if current task is killed (or non-existent) - only intended to be used by
+/// return_if_killed!
+pub fn is_current_task_killed() -> bool {
+    if let Some(task) = context::try_current_task() {
+        if task.is_killed() {
+            trace!("current task is killed");
+            true
+        } else {
+            false
+        }
+    } else {
+        trace!("no current task");
+        true
+    }
+}
+
+/// Return from the current function if the current task is killed, or there is no current task.
+/// Intended mainly for Drop impls, so assumes that the current function returns ().
+#[macro_export]
+macro_rules! return_if_killed {
+    () => {
+        if $crate::runtime::is_current_task_killed() {
+            tracing::trace!("early return - task is killed");
+            return;
+        }
+    };
+}
+
 /// Initialize logger.
 pub fn init_logger() {
     use std::sync::Once;
     static LOGGER_INIT: Once = Once::new();
     LOGGER_INIT.call_once(tracing_subscriber::fmt::init);
 }
+
 #[cfg(test)]
 mod tests {
     use super::start_watchdog_with;
