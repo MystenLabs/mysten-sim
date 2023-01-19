@@ -415,7 +415,7 @@ fn build_test_config(args: syn::AttributeArgs) -> Result<TestConfig, syn::Error>
                         let expr = match &namevalue.lit {
                             syn::Lit::Str(litstr) => syn::parse_str::<syn::Expr>(&litstr.value())?,
                             _ => {
-                                let msg = format!("expected string literal");
+                                let msg = "expected string literal".to_string();
                                 return Err(syn::Error::new_spanned(namevalue, msg));
                             }
                         };
