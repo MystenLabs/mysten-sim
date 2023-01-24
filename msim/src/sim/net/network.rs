@@ -242,16 +242,15 @@ impl Network {
     pub fn deregister_tcp_id(&mut self, node: NodeId, remote_addr: &SocketAddr, tcp_id: u32) {
         trace!("deregistering tcp id {} for node {}", tcp_id, node);
 
-        // remove id from node
-        assert!(
-            self.nodes
-                .get_mut(&node)
-                .unwrap()
-                .live_tcp_ids
-                .remove(&tcp_id),
-            "unknown tcp id {}",
-            tcp_id
-        );
+        // node may have been deleted
+        if let Some(node) = self.nodes.get_mut(&node) {
+            // remove id from node
+            assert!(
+                node.live_tcp_ids.remove(&tcp_id),
+                "unknown tcp id {}",
+                tcp_id
+            );
+        };
 
         // wake the remote end in case it is waiting on a read.
         let Some(node_id) = &self.get_node_for_addr(&remote_addr.ip()) else {
@@ -303,11 +302,12 @@ impl Network {
         socket.lock().unwrap().accept_connect()
     }
 
-    pub fn close(&mut self, node: NodeId, addr: SocketAddr) {
-        debug!("close: {node} {addr}");
-        let node = self.nodes.get_mut(&node).expect("node not found");
-        // TODO: simulate TIME_WAIT?
-        node.sockets.remove(&addr.port());
+    pub fn close(&mut self, node_id: NodeId, addr: SocketAddr) {
+        if let Some(node) = self.nodes.get_mut(&node_id) {
+            debug!("close: {node_id} {addr}");
+            // TODO: simulate TIME_WAIT?
+            node.sockets.remove(&addr.port());
+        }
     }
 
     pub fn send(
@@ -358,7 +358,7 @@ impl Network {
                         .tcp_packet_loss
                         .packet_loss_rate(&mut self.rand, node_id, dst_node);
                 if self.rand.gen_bool(plr) {
-                    trace!("tcp connection failure");
+                    debug!("tcp connection failure");
                     return Err(io::Error::new(
                         io::ErrorKind::ConnectionReset,
                         format!("peer hung up: {dst}"),
@@ -375,7 +375,7 @@ impl Network {
             // realistic but it shouldn't matter for the most part. At some point we may build a
             // more physically-based tcp simulator.
             if !node.live_tcp_ids.contains(&id) {
-                trace!("tcp session to {dst} has ended");
+                debug!("tcp session to {dst} has ended");
                 return Err(io::Error::new(
                     io::ErrorKind::ConnectionReset,
                     format!("peer hung up: {dst}"),
@@ -386,7 +386,7 @@ impl Network {
         let mailbox = match node.sockets.get(&dst.port()) {
             Some(mailbox) => Arc::downgrade(mailbox),
             None => {
-                trace!("destination port not available: {dst}");
+                debug!("destination port not available: {dst}");
                 return Err(io::Error::new(
                     io::ErrorKind::ConnectionRefused,
                     format!("connection refused: {dst}"),

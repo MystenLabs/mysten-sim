@@ -14,7 +14,7 @@ use std::time::Duration;
 
 use crate::task::NodeId;
 
-use tracing::debug;
+use tracing::{debug, info};
 
 /// A naive timer.
 #[derive(Default)]
@@ -69,8 +69,13 @@ impl Timer {
     /// Remove all events for node and return them in a vector. The vector should be
     /// dropped while no locks are held, since drop handlers may acquire arbitrary locks.
     pub fn disable_node_and_remove_events(&mut self, node_id: NodeId) -> Vec<Callback> {
-        assert!(self.disabled_node_ids.insert(node_id));
         let mut ret = Vec::new();
+
+        if !self.disabled_node_ids.insert(node_id) {
+            info!("node {} was already disabled", node_id);
+            return ret;
+        }
+
         for entry in self.events.iter() {
             if entry.node_id == node_id {
                 if let Some(cb) = entry.callback.take() {

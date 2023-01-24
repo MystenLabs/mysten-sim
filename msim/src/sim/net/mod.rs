@@ -905,6 +905,7 @@ impl NetSim {
         debug!("delete_node {id}");
         let mut network = self.network.lock().unwrap();
         network.delete_node(id);
+        drop(network);
 
         let mut host_state = self.host_state.lock().unwrap();
         host_state.delete_node(id);
