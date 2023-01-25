@@ -21,7 +21,6 @@ use msim::net::{
     network::{Payload, PayloadType},
     try_get_endpoint_from_socket, Endpoint, OwnedFd,
 };
-use msim::return_if_killed;
 use real_tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 
 pub use super::udp::*;
@@ -119,7 +118,7 @@ impl TcpListener {
             })?;
 
         debug!(
-            "new tcp connection from {} -> {}",
+            "accepted new tcp connection from {} -> {}",
             state.remote_sock,
             state.ep.local_addr().unwrap(),
         );
@@ -312,8 +311,6 @@ impl TcpState {
 
 impl Drop for TcpState {
     fn drop(&mut self) {
-        return_if_killed!();
-
         self.ep
             .deregister_tcp_id(&self.remote_sock, self.local_tcp_id);
     }
@@ -389,6 +386,10 @@ impl TcpStream {
             state.remote_sock,
             from
         );
+        debug!(
+            "new TcpStream connection to {} (id: {})",
+            state.remote_sock, local_tcp_id
+        );
         Ok(Self::new(state))
     }
 
@@ -405,7 +406,6 @@ impl TcpStream {
     }
 
     fn poll_write_priv(&self, _cx: &mut Context<'_>, buf: &[u8]) -> Poll<io::Result<usize>> {
-        trace!(addr = ?self.state.ep.local_addr(), "write: {}", String::from_utf8_lossy(&buf));
         let num = buf.len();
         let tag = self.state.next_send_tag();
         let seq = (tag & 0xffffffff) as u32;
@@ -445,6 +445,7 @@ impl TcpStream {
             .ep
             .is_peer_live(Some(self.state.remote_sock), remote_tcp_id)
         {
+            debug!("peer {} hung up", self.state.remote_sock);
             return Poll::Ready(Err(io::Error::new(
                 io::ErrorKind::ConnectionReset,
                 format!("peer {} hung up", self.state.remote_sock),
@@ -465,7 +466,6 @@ impl TcpStream {
                 debug_assert_eq!(from, self.state.remote_sock);
 
                 let (seq, payload) = Message::new(payload).unwrap_payload();
-                trace!(addr = ?self.state.ep.local_addr(), "read: {}", String::from_utf8_lossy(&payload));
                 debug_assert_eq!(seq as u64, tag & 0xffffffff);
                 let mut buf = Buffer::new_from_vec(payload);
                 let num_bytes = buf.read(is_poll, read);

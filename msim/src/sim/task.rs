@@ -1,7 +1,9 @@
 //! Asynchronous tasks executor.
 
 use super::{
+    context,
     rand::GlobalRng,
+    runtime,
     time::{TimeHandle, TimeRuntime},
     utils::mpsc,
 };
@@ -25,7 +27,7 @@ use std::{
     time::Duration,
 };
 
-use tracing::{error_span, trace, Span};
+use tracing::{error_span, info, trace, Span};
 
 pub use tokio::msim_adapter::{join_error, runtime_task};
 pub use tokio::task::{yield_now, JoinError};
@@ -45,7 +47,7 @@ pub(crate) struct Executor {
 /// A unique identifier for a node.
 #[cfg_attr(docsrs, doc(cfg(msim)))]
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Clone, Copy)]
-pub struct NodeId(u64);
+pub struct NodeId(pub u64);
 
 impl fmt::Display for NodeId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -63,6 +65,49 @@ pub(crate) struct NodeInfo {
     pub node: NodeId,
     pub name: String,
     span: Span,
+}
+
+#[derive(Debug)]
+struct PanicWrapper {
+    // how long should the node stay down.
+    restart_after: Duration,
+}
+
+struct PanicHookGuard(Option<Box<dyn Fn(&std::panic::PanicInfo<'_>) + Sync + Send + 'static>>);
+
+impl PanicHookGuard {
+    fn new() -> Self {
+        Self(Some(std::panic::take_hook()))
+    }
+
+    fn call_hook(&self, info: &std::panic::PanicInfo<'_>) {
+        self.0.as_ref().unwrap()(info);
+    }
+}
+
+impl Drop for PanicHookGuard {
+    fn drop(&mut self) {
+        std::panic::set_hook(self.0.take().unwrap());
+    }
+}
+
+/// Kill the current node by panicking with a special type that tells the executor to kill the
+/// current node instead of terminating the test.
+pub fn kill_current_node(restart_after: Option<Duration>) {
+    let handle = runtime::Handle::current();
+    let cur_node_id = context::current_node();
+
+    let restart_after = restart_after.unwrap_or_else(|| {
+        Duration::from_millis(handle.rand.with(|rng| rng.gen_range(1000..3000)))
+    });
+
+    info!(
+        "killing node {}. Will restart in {:?}",
+        cur_node_id, restart_after
+    );
+    handle.kill(cur_node_id);
+    // panic with PanicWrapper so that run_all_ready can intercept it.
+    std::panic::panic_any(PanicWrapper { restart_after });
 }
 
 pub(crate) struct TaskInfo {
@@ -133,17 +178,7 @@ impl Executor {
     }
 
     pub fn block_on<F: Future>(&self, future: F) -> F::Output {
-        // push the future into ready queue.
-        let sender = self.handle.sender.clone();
-        let info = Arc::new(TaskInfo::new(NodeId(0), "main".into()));
-        let (runnable, mut task) = unsafe {
-            // Safety: The schedule is not Sync,
-            // the task's Waker must be used and dropped on the original thread.
-            async_task::spawn_unchecked(future, move |runnable| {
-                sender.send((runnable, info.clone())).unwrap();
-            })
-        };
-        runnable.schedule();
+        let mut task = self.spawn_on_main_task(future);
 
         // empty context to poll the result
         let waker = futures::task::noop_waker();
@@ -166,8 +201,36 @@ impl Executor {
         }
     }
 
+    fn spawn_on_main_task<F: Future>(&self, future: F) -> async_task::Task<F::Output> {
+        let sender = self.handle.sender.clone();
+        let info = Arc::new(TaskInfo::new(NodeId(0), "main".into()));
+        let (runnable, task) = unsafe {
+            // Safety: The schedule is not Sync,
+            // the task's Waker must be used and dropped on the original thread.
+            async_task::spawn_unchecked(future, move |runnable| {
+                sender.send((runnable, info.clone())).unwrap();
+            })
+        };
+        runnable.schedule();
+        task
+    }
+
     /// Drain all tasks from ready queue and run them.
     fn run_all_ready(&self) {
+        let hook_guard = Arc::new(PanicHookGuard::new());
+        let hook_guard_clone = Arc::downgrade(&hook_guard);
+        std::panic::set_hook(Box::new(move |panic_info| {
+            if panic_info
+                .payload()
+                .downcast_ref::<PanicWrapper>()
+                .is_none()
+            {
+                if let Some(old_hook) = hook_guard_clone.upgrade() {
+                    old_hook.call_hook(panic_info);
+                }
+            }
+        }));
+
         while let Ok((runnable, info)) = self.queue.try_recv_random(&self.rand) {
             if *info.killed.borrow() {
                 // killed task: must enter the task before dropping it, so that
@@ -182,9 +245,28 @@ impl Executor {
                 continue;
             }
             // run task
+            let node_id = info.node();
             let _guard = crate::context::enter_task(info);
             let panic_guard = PanicGuard(self);
-            runnable.run();
+
+            let result = std::panic::catch_unwind(|| {
+                runnable.run();
+            });
+
+            if let Err(err) = result {
+                if let Some(panic_info) = err.downcast_ref::<PanicWrapper>() {
+                    let restart_after = panic_info.restart_after;
+                    let task = self.spawn_on_main_task(async move {
+                        crate::time::sleep(restart_after).await;
+                        info!("restarting node {}", node_id);
+                        runtime::Handle::current().restart(node_id);
+                    });
+
+                    task.fallible().detach();
+                } else {
+                    std::panic::resume_unwind(err);
+                }
+            }
 
             // panic guard only runs if runnable.run() panics - in that case
             // we must drop all tasks before exiting the task, since they may have Drop impls that
