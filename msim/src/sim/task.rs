@@ -87,7 +87,9 @@ impl PanicHookGuard {
 
 impl Drop for PanicHookGuard {
     fn drop(&mut self) {
-        std::panic::set_hook(self.0.take().unwrap());
+        if !std::thread::panicking() {
+            std::panic::set_hook(self.0.take().unwrap());
+        }
     }
 }
 
