@@ -69,8 +69,8 @@ pub(crate) struct NodeInfo {
 
 #[derive(Debug)]
 struct PanicWrapper {
-    // how long should the node stay down.
-    restart_after: Duration,
+    // how long should the node stay down. If None, node does not reboot.
+    restart_after: Option<Duration>,
 }
 
 struct PanicHookGuard(Option<Box<dyn Fn(&std::panic::PanicInfo<'_>) + Sync + Send + 'static>>);
@@ -97,16 +97,28 @@ impl Drop for PanicHookGuard {
 /// current node instead of terminating the test.
 pub fn kill_current_node(restart_after: Option<Duration>) {
     let handle = runtime::Handle::current();
-    let cur_node_id = context::current_node();
-
     let restart_after = restart_after.unwrap_or_else(|| {
         Duration::from_millis(handle.rand.with(|rng| rng.gen_range(1000..3000)))
     });
+    kill_current_node_impl(handle, Some(restart_after));
+}
 
-    info!(
-        "killing node {}. Will restart in {:?}",
-        cur_node_id, restart_after
-    );
+/// Kill the current node, and do not restart it automatically.
+pub fn shutdown_current_node() {
+    kill_current_node_impl(runtime::Handle::current(), None);
+}
+
+fn kill_current_node_impl(handle: runtime::Handle, restart_after: Option<Duration>) {
+    let cur_node_id = context::current_node();
+
+    if let Some(restart_after) = restart_after {
+        info!(
+            "killing node {}. Will restart in {:?}",
+            cur_node_id, restart_after
+        );
+    } else {
+        info!("shutting down node {}", cur_node_id);
+    }
     handle.kill(cur_node_id);
     // panic with PanicWrapper so that run_all_ready can intercept it.
     std::panic::panic_any(PanicWrapper { restart_after });
@@ -257,14 +269,15 @@ impl Executor {
 
             if let Err(err) = result {
                 if let Some(panic_info) = err.downcast_ref::<PanicWrapper>() {
-                    let restart_after = panic_info.restart_after;
-                    let task = self.spawn_on_main_task(async move {
-                        crate::time::sleep(restart_after).await;
-                        info!("restarting node {}", node_id);
-                        runtime::Handle::current().restart(node_id);
-                    });
+                    if let Some(restart_after) = panic_info.restart_after {
+                        let task = self.spawn_on_main_task(async move {
+                            crate::time::sleep(restart_after).await;
+                            info!("restarting node {}", node_id);
+                            runtime::Handle::current().restart(node_id);
+                        });
 
-                    task.fallible().detach();
+                        task.fallible().detach();
+                    }
                 } else {
                     std::panic::resume_unwind(err);
                 }
