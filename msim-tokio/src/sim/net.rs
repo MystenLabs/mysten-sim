@@ -378,7 +378,11 @@ impl TcpStream {
             .ep
             .recv_from_raw(state.get_next_recv_tag_and_inc())
             .await?;
-        debug_assert_eq!(from, remote_sock);
+
+        if from != remote_sock && !remote_sock.ip().is_loopback() {
+            panic!("unexpected socket address: {:?} vs {:?}", from, remote_sock);
+        }
+
         // finish initializing state
         state.remote_tcp_id = Message::new(msg).unwrap_tcp_id();
         trace!(
@@ -463,7 +467,12 @@ impl TcpStream {
                     Ok(r) => r,
                 };
                 self.state.increment_recv_tag();
-                debug_assert_eq!(from, self.state.remote_sock);
+                if from != self.state.remote_sock && !self.state.remote_sock.ip().is_loopback() {
+                    panic!(
+                        "unexpected socket address: {:?} vs {:?}",
+                        from, self.state.remote_sock
+                    );
+                }
 
                 let (seq, payload) = Message::new(payload).unwrap_payload();
                 debug_assert_eq!(seq as u64, tag & 0xffffffff);

@@ -70,7 +70,7 @@ pub struct NetSim {
     host_state: Mutex<HostNetworkState>,
     rand: GlobalRng,
     time: TimeHandle,
-    next_tcp_id_map: Mutex<HashMap<IpAddr, u32>>,
+    next_tcp_id_map: Mutex<HashMap<NodeId, u32>>,
 }
 
 #[derive(Debug)]
@@ -957,13 +957,13 @@ impl NetSim {
         self.time.sleep(delay).await;
     }
 
-    /// Get the next unused tcp id for this ip address.
-    pub fn next_tcp_id(&self, ip: IpAddr) -> u32 {
+    /// Get the next unused tcp id for this node.
+    pub fn next_tcp_id(&self, node: NodeId) -> u32 {
         let mut map = self.next_tcp_id_map.lock().unwrap();
-        match map.entry(ip) {
+        match map.entry(node) {
             Entry::Occupied(mut cur) => {
                 let cur = cur.get_mut();
-                // limited to 2^32 - 1 tcp sessions per ip per simulation run.
+                // limited to 2^32 - 1 tcp sessions per node per simulation run.
                 *cur = cur.checked_add(1).unwrap();
                 *cur
             }
@@ -1073,7 +1073,7 @@ impl Endpoint {
 
     /// Allocate a new tcp id number for this node. Ids are never reused.
     pub fn allocate_local_tcp_id(&self) -> u32 {
-        let id = self.net.next_tcp_id(self.addr.ip());
+        let id = self.net.next_tcp_id(self.node);
         self.live_tcp_ids.lock().unwrap().insert(id);
         self.net
             .network
