@@ -761,6 +761,15 @@ impl IntoRawFd for TcpStream {
     }
 }
 
+pub async fn lookup_host<T>(host: T) -> io::Result<impl Iterator<Item = SocketAddr>>
+where
+    T: ToSocketAddrs,
+{
+    // pretend to be async in simulator
+    msim::time::sleep(Duration::from_micros(10)).await;
+    host.to_socket_addrs()
+}
+
 #[cfg(test)]
 mod tests {
 
