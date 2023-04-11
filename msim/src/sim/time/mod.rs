@@ -457,9 +457,57 @@ define_sys_interceptor!(
     }
 );
 
-#[cfg(target_os = "linux")]
 define_bypass!(bypass_clock_gettime,
     fn clock_gettime(clock_id: libc::clockid_t, ts: *mut libc::timespec) -> libc::c_int);
+
+// Since Rust 1.67.0, Instant::now() and SystemTime::now() are implemented using clock_gettime()
+#[cfg(target_os = "macos")]
+define_sys_interceptor!(
+    fn clock_gettime(clock_id: libc::clockid_t, ts: *mut libc::timespec) -> libc::c_int {
+        let Some(time) = TimeHandle::try_current() else {
+            // Sometimes Drop impls ask for the current time as the runtime is being dropped. It
+            // might be better to try to completely drop everything owned by the runtime inside
+            // of a block_on() call, but that is tricky to do correctly.
+            trace!("clock_gettime called outside of Runtime");
+            return bypass_clock_gettime(clock_id, ts);
+        };
+
+        match clock_id {
+            // used by SystemTime
+            libc::CLOCK_REALTIME => {
+                if use_real_wallcock() {
+                    return bypass_clock_gettime(clock_id, ts);
+                }
+
+                let dur = time
+                    .now_time()
+                    .duration_since(std::time::SystemTime::UNIX_EPOCH)
+                    .unwrap();
+                ts.write(libc::timespec {
+                    tv_sec: dur.as_secs() as _,
+                    tv_nsec: dur.subsec_nanos() as _,
+                });
+            }
+
+            // used by Instant
+            libc::CLOCK_MONOTONIC | libc::CLOCK_UPTIME_RAW | libc::CLOCK_MONOTONIC_RAW => {
+                let dur = time.elapsed();
+                ts.write(libc::timespec {
+                    tv_sec: dur.as_secs() as _,
+                    tv_nsec: dur.subsec_nanos() as _,
+                });
+            }
+
+            // Used by rocksdb performance timers.
+            libc::CLOCK_PROCESS_CPUTIME_ID | libc::CLOCK_THREAD_CPUTIME_ID => {
+                return bypass_clock_gettime(clock_id, ts);
+            }
+
+            _ => panic!("unsupported clockid: {}", clock_id),
+        }
+        0
+    }
+);
 
 #[cfg(target_os = "linux")]
 define_sys_interceptor!(
