@@ -39,7 +39,7 @@ use std::{
     collections::{hash_map::Entry, HashMap, HashSet},
     io,
     net::{IpAddr, Ipv4Addr, SocketAddr, ToSocketAddrs},
-    os::unix::io::{AsRawFd, RawFd},
+    os::unix::io::{AsFd, AsRawFd, BorrowedFd, RawFd},
     sync::{Arc, Mutex},
     task::Context,
 };
@@ -104,6 +104,12 @@ impl OwnedFd {
 impl AsRawFd for OwnedFd {
     fn as_raw_fd(&self) -> RawFd {
         self.0
+    }
+}
+
+impl AsFd for OwnedFd {
+    fn as_fd(&self) -> BorrowedFd<'_> {
+        unsafe { BorrowedFd::borrow_raw(self.as_raw_fd()) }
     }
 }
 
