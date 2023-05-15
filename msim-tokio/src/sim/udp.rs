@@ -1,7 +1,7 @@
 use std::{
     io, net,
     net::{Ipv4Addr, Ipv6Addr, SocketAddr, ToSocketAddrs},
-    os::unix::io::{AsRawFd, FromRawFd, IntoRawFd, RawFd},
+    os::unix::io::{AsFd, AsRawFd, BorrowedFd, FromRawFd, IntoRawFd, RawFd},
     sync::{Arc, Mutex},
     task::{Context, Poll},
 };
@@ -288,6 +288,12 @@ impl UdpSocket {
 impl AsRawFd for UdpSocket {
     fn as_raw_fd(&self) -> RawFd {
         self.fd.as_raw_fd()
+    }
+}
+
+impl AsFd for UdpSocket {
+    fn as_fd(&self) -> BorrowedFd<'_> {
+        self.fd.as_fd()
     }
 }
 
