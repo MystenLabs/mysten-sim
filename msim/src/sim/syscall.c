@@ -8,8 +8,9 @@
 #include <stdarg.h>
 #include <sys/syscall.h>
 #include <sys/random.h>
+#include <sys/socket.h>
 
-/* the getrandom() crate makes the following call - we intercept it!
+/* the getrandom() crate makes the following call - we intercept it:
 
 unsafe fn getrandom(
     buf: *mut libc::c_void,
@@ -18,6 +19,10 @@ unsafe fn getrandom(
 ) -> libc::ssize_t {
     libc::syscall(libc::SYS_getrandom, buf, buflen, flags) as libc::ssize_t
 }
+
+quinn makes the following call - we intercept it:
+
+let ret = libc::syscall(libc::SYS_sendmmsg, sockfd, msgvec, vlen, flags) as libc::c_int;
 
 */
 
@@ -31,6 +36,16 @@ ssize_t syscall(long call, ...) {
       size_t len = va_arg(args, size_t);
       uint32_t flags = va_arg(args, uint32_t);
       return getrandom(buf, len, flags);
+    }
+
+    if (call == SYS_sendmmsg) {
+      va_list args;
+      va_start(args, call);
+      int fd = va_arg(args, int);
+      struct mmsghdr* msgvec = va_arg(args, struct mmsghdr*);
+      unsigned int vlen = va_arg(args, unsigned int);
+      int flags = va_arg(args, int);
+      return sendmmsg(fd, msgvec, vlen, flags);
     }
 
     if (libc_syscall_fn == NULL) {
