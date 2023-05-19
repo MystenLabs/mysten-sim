@@ -20,9 +20,11 @@ unsafe fn getrandom(
     libc::syscall(libc::SYS_getrandom, buf, buflen, flags) as libc::ssize_t
 }
 
-quinn makes the following call - we intercept it:
+quinn makes the following calls - we intercept them:
 
 let ret = libc::syscall(libc::SYS_sendmmsg, sockfd, msgvec, vlen, flags) as libc::c_int;
+
+libc::syscall(libc::SYS_recvmmsg, sockfd, msgvec, vlen, flags, timeout) as libc::c_int;
 
 */
 
@@ -46,6 +48,17 @@ ssize_t syscall(long call, ...) {
       unsigned int vlen = va_arg(args, unsigned int);
       int flags = va_arg(args, int);
       return sendmmsg(fd, msgvec, vlen, flags);
+    }
+
+    if (call == SYS_recvmmsg) {
+      va_list args;
+      va_start(args, call);
+      int fd = va_arg(args, int);
+      struct mmsghdr* msgvec = va_arg(args, struct mmsghdr*);
+      unsigned int vlen = va_arg(args, unsigned int);
+      int flags = va_arg(args, int);
+      struct timespec* timeout = va_arg(args, struct timespec*);
+      return recvmmsg(fd, msgvec, vlen, flags, timeout);
     }
 
     if (libc_syscall_fn == NULL) {
