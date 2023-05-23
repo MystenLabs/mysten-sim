@@ -23,6 +23,10 @@ pub(crate) fn try_current_task() -> Option<Arc<TaskInfo>> {
     TASK.with(|task| task.borrow().clone())
 }
 
+pub(crate) fn current_task() -> Arc<TaskInfo> {
+    try_current_task().unwrap()
+}
+
 pub(crate) fn current_node() -> NodeId {
     TASK.with(|task| task.borrow().as_ref().expect(MSG).node())
 }

@@ -9,6 +9,7 @@ use super::{
 };
 use crate::assert_send_sync;
 use async_task::{FallibleTask, Runnable};
+use backtrace::Backtrace;
 use erasable::{ErasablePtr, ErasedPtr};
 use futures::pin_mut;
 use rand::Rng;
@@ -23,11 +24,11 @@ use std::{
         atomic::{AtomicBool, AtomicU64, Ordering},
         Arc, Mutex,
     },
-    task::{Context, Poll},
+    task::{Context, Poll, Waker},
     time::Duration,
 };
 
-use tracing::{error_span, info, trace, Span};
+use tracing::{error_span, info, trace, warn, Span};
 
 pub use tokio::msim_adapter::{join_error, runtime_task};
 pub use tokio::task::{yield_now, JoinError};
@@ -163,6 +164,71 @@ impl TaskInfo {
     }
 }
 
+// Instrumentation to capture the stack trace of points of interest in the code.
+// Code can call `instrumented_yield` to allow the scheduler to see the stack trace
+// of the task that just yielded.
+thread_local! {
+    static LAST_CAPTURE: Mutex<Option<Arc<(Arc<TaskInfo>, Waker, Backtrace)>>> = Mutex::new(None);
+}
+
+#[derive(Default)]
+struct YieldToScheduler(Option<Arc<(Arc<TaskInfo>, Waker, Backtrace)>>);
+
+impl Future for YieldToScheduler {
+    type Output = ();
+
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> {
+        // capture the current stack trace
+        LAST_CAPTURE.with(|last_capture| {
+            let mut last_capture = last_capture.lock().unwrap();
+            match (&self.0, last_capture.as_ref()) {
+                (Some(this), Some(last)) => {
+                    assert!(Arc::ptr_eq(this, last));
+                    // we were polled again before control reached the scheduler
+                    warn!("YieldToScheduler polled before being woken");
+                    Poll::Pending
+                }
+                (Some(_), None) => {
+                    // the scheduler cleared the capture, so we are ready to resume.
+                    Poll::Ready(())
+                }
+                (None, Some(_)) => {
+                    // If this happens and can't be avoided, we could keep a Vec instead of Option
+                    // in LAST_CAPTURE, although the scheduler will have no ability to change the
+                    // ordering of such events.
+                    panic!(
+                        "instrumented_yield() called twice before control returned to scheduler"
+                    );
+                }
+                (None, None) => {
+                    trace!("capturing stack trace and yielding");
+                    let task = context::current_task();
+                    let new_capture = Arc::new((task, cx.waker().clone(), Backtrace::new()));
+                    *last_capture = Some(new_capture.clone());
+                    self.0 = Some(new_capture);
+                    Poll::Pending
+                }
+            }
+        })
+    }
+}
+
+/// Capture the current stack trace and attempt to yield execution back to the scheduler.
+///
+/// Note that it is not possible to guarantee that execution immediately returns all the way to
+/// the scheduler, as the yielding future may be wrapped in another future that polls other futures
+/// (for instance a `select!` macro, or FuturesOrdered/FuturesUnordered collection). Also, it is
+/// possible for an intermediate future to poll() the YieldToScheduler instance again before it is
+/// woken.  However, we do guarantee not to wake the future until execution has returned to the
+/// scheduler.
+pub fn instrumented_yield() -> Box<dyn Future<Output = ()>> {
+    Box::new(YieldToScheduler::default())
+}
+
+fn take_last_capture() -> Option<Arc<(Arc<TaskInfo>, Waker, Backtrace)>> {
+    LAST_CAPTURE.with(|last_capture| last_capture.lock().unwrap().take())
+}
+
 impl Executor {
     pub fn new(rand: GlobalRng) -> Self {
         let (sender, queue) = mpsc::channel();
@@ -266,6 +332,13 @@ impl Executor {
             let result = std::panic::catch_unwind(|| {
                 runnable.run();
             });
+
+            if let Some(capture) = take_last_capture() {
+                let (_task, waker, _captured_stack) = &*capture;
+                waker.wake_by_ref();
+
+                // Examine stack trace of previously yielded task
+            }
 
             if let Err(err) = result {
                 if let Some(panic_info) = err.downcast_ref::<PanicWrapper>() {
