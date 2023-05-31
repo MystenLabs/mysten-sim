@@ -555,6 +555,11 @@ define_sys_interceptor!(
             #[cfg(target_os = "macos")]
             (libc::SOL_SOCKET, libc::SO_NOSIGPIPE) => 0,
 
+            // called by anemo::Network::start (via socket2)
+            // no need to emulate socket buffers
+            (libc::SOL_SOCKET, libc::SO_RCVBUF) => 0,
+            (libc::SOL_SOCKET, libc::SO_SNDBUF) => 0,
+
             // Call by quinn, no need to emulate (for now)
             (libc::IPPROTO_IP, libc::IP_RECVTOS) => 0,
             (libc::IPPROTO_IP, libc::IP_PKTINFO) => 0,
