@@ -93,6 +93,19 @@ impl Drop for PanicHookGuard {
     }
 }
 
+/// Shut down all nodes in the simulator.
+pub fn shutdown_all_nodes() {
+    let cur_node_id = context::current_node();
+    let handle = runtime::Handle::current();
+    let node_ids: Vec<_> = handle.task.nodes.lock().unwrap().keys().copied().collect();
+    for node_id in node_ids {
+        if node_id == cur_node_id {
+            continue;
+        }
+        handle.kill(node_id);
+    }
+}
+
 /// Kill the current node by panicking with a special type that tells the executor to kill the
 /// current node instead of terminating the test.
 pub fn kill_current_node(restart_after: Option<Duration>) {
