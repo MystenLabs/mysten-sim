@@ -41,6 +41,11 @@ impl Handle {
         }
     }
 
+    pub fn block_on<F: Future>(&self, _future: F) -> F::Output {
+        // there may not be a good way to do this that doesn't deadlock the sim.
+        todo!()
+    }
+
     pub fn spawn<F>(&self, future: F) -> JoinHandle<F::Output>
     where
         F: Future + Send + 'static,
@@ -78,6 +83,12 @@ pub struct Id(u64);
 
 pub struct Runtime {
     handle: Handle,
+}
+
+impl fmt::Debug for Runtime {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "Runtime()")
+    }
 }
 
 impl Runtime {
@@ -340,5 +351,42 @@ impl fmt::Debug for Builder {
             .field("before_park", &self.before_park.as_ref().map(|_| "..."))
             .field("after_unpark", &self.after_unpark.as_ref().map(|_| "..."))
             .finish()
+    }
+}
+
+/// A group of tasks that all run on the same thread. Because the simulator is single-threaded,
+/// this just passes the spawn_local calls through to the current task node.
+#[derive(Debug)]
+pub struct LocalSet;
+
+impl LocalSet {
+    /// Returns a new local task set.
+    pub fn new() -> LocalSet {
+        LocalSet
+    }
+
+    /// spawn a task onto the local task set.
+    pub fn spawn_local<F>(&self, future: F) -> JoinHandle<F::Output>
+    where
+        F: Future + 'static,
+        F::Output: 'static,
+    {
+        ms_runtime::NodeHandle::current().spawn_local(future)
+    }
+
+    /// block until the future completes.
+    pub fn block_on<F>(&self, rt: &crate::runtime::Runtime, future: F) -> F::Output
+    where
+        F: Future,
+    {
+        rt.block_on(self.run_until(future))
+    }
+
+    /// run the future until it completes.
+    pub async fn run_until<F>(&self, future: F) -> F::Output
+    where
+        F: Future,
+    {
+        future.await
     }
 }

@@ -11,7 +11,11 @@ mod sim {
     // TODO: simulate `task_local`
 
     // simulated API
-    pub use msim::task;
+    pub mod task {
+        pub use crate::runtime::LocalSet;
+        pub use msim::task::*;
+    }
+
     #[cfg(feature = "rt")]
     pub use msim::task::spawn;
     #[cfg(feature = "time")]
