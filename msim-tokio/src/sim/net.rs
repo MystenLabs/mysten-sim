@@ -21,7 +21,7 @@ use msim::net::{
     network::{Payload, PayloadType},
     try_get_endpoint_from_socket, Endpoint, OwnedFd,
 };
-use real_tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
+use real_tokio::io::{AsyncRead, AsyncWrite, Interest, ReadBuf, Ready};
 
 pub use super::udp::*;
 pub use super::unix;
@@ -506,6 +506,10 @@ impl TcpStream {
         fut.await
     }
 
+    pub async fn ready(&self, _interest: Interest) -> io::Result<Ready> {
+        todo!()
+    }
+
     // flush and shutdown are no-ops
     fn poll_flush_priv(&self, _: &mut Context<'_>) -> Poll<io::Result<()>> {
         Poll::Ready(Ok(()))
@@ -539,6 +543,11 @@ impl TcpStream {
 
     pub fn set_ttl(&self, _ttl: u32) -> io::Result<()> {
         todo!()
+    }
+
+    pub fn from_std(stream: std::net::TcpStream) -> io::Result<TcpStream> {
+        let fd = stream.into_raw_fd();
+        unsafe { Ok(Self::from_raw_fd(fd)) }
     }
 }
 

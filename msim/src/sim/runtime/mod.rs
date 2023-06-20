@@ -472,6 +472,15 @@ impl NodeHandle {
         self.task.spawn(async move { f() })
     }
 
+    /// Spawn a on the local thread.
+    pub fn spawn_local<F>(&self, future: F) -> JoinHandle<F::Output>
+    where
+        F: Future + 'static,
+        F::Output: 'static,
+    {
+        self.task.spawn_local(future)
+    }
+
     /// Join the node.
     /// TODO: unimplemented
     pub fn join(self) -> Result<(), ()> {
