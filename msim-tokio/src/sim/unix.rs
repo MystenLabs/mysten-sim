@@ -242,6 +242,17 @@ impl AsyncWrite for UnixStream {
 }
 
 pub struct ReadHalf<'a>(&'a std::marker::PhantomData<u8>);
+
+impl AsyncRead for ReadHalf<'_> {
+    fn poll_read(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<io::Result<()>> {
+        todo!()
+    }
+}
+
 pub struct WriteHalf<'a>(&'a std::marker::PhantomData<u8>);
 pub struct OwnedReadHalf;
 pub struct OwnedWriteHalf;
