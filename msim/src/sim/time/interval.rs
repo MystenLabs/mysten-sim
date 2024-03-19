@@ -167,8 +167,40 @@ impl Interval {
     /// Resets the interval to complete one period after the current time.
     ///
     /// This method ignores [`MissedTickBehavior`] strategy.
+    ///
+    /// This is equivalent to calling `reset_at(Instant::now() + period)`.
     pub fn reset(&mut self) {
         self.delay.as_mut().reset(Instant::now() + self.period);
+    }
+
+    /// Resets the interval immediately.
+    ///
+    /// This method ignores [`MissedTickBehavior`] strategy.
+    ///
+    /// This is equivalent to calling `reset_at(Instant::now())`.
+    pub fn reset_immediately(&mut self) {
+        self.delay.as_mut().reset(Instant::now());
+    }
+
+    /// Resets the interval after the specified [`std::time::Duration`].
+    ///
+    /// This method ignores [`MissedTickBehavior`] strategy.
+    ///
+    /// This is equivalent to calling `reset_at(Instant::now() + after)`.
+    pub fn reset_after(&mut self, after: Duration) {
+        self.delay.as_mut().reset(Instant::now() + after);
+    }
+
+    /// Resets the interval to a [`crate::time::Instant`] deadline.
+    ///
+    /// Sets the next tick to expire at the given instant. If the instant is in
+    /// the past, then the [`MissedTickBehavior`] strategy will be used to
+    /// catch up. If the instant is in the future, then the next tick will
+    /// complete at the given instant, even if that means that it will sleep for
+    /// longer than the duration of this [`Interval`]. If the [`Interval`] had
+    /// any missed ticks before calling this method, then those are discarded.
+    pub fn reset_at(&mut self, deadline: Instant) {
+        self.delay.as_mut().reset(deadline);
     }
 
     /// Returns the [`MissedTickBehavior`] strategy currently being used.
