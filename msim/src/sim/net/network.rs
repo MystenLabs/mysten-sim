@@ -33,7 +33,7 @@ struct Node {
     /// NOTE: now a node can have at most one IP address.
     ip: Option<IpAddr>,
     /// Sockets in the node.
-    sockets: HashMap<u16, Arc<Mutex<Mailbox>>>,
+    sockets: HashMap<SocketKey, Arc<Mutex<Mailbox>>>,
 
     /// live tcp connections.
     live_tcp_ids: HashSet<u32>,
@@ -65,6 +65,17 @@ impl Default for Node {
 pub struct Stat {
     /// Total number of messages.
     pub msg_count: u64,
+}
+
+#[derive(Debug, Hash, Eq, PartialEq)]
+struct SocketKey(u16, libc::c_int);
+
+fn proto_str(proto: libc::c_int) -> &'static str {
+    match proto {
+        libc::SOCK_STREAM => "tcp",
+        libc::SOCK_DGRAM => "udp",
+        _ => panic!("unsupported socket type {}", proto),
+    }
 }
 
 impl Network {
@@ -179,8 +190,13 @@ impl Network {
         self.clogged_link.remove(&(src, dst));
     }
 
-    pub fn bind(&mut self, node_id: NodeId, mut addr: SocketAddr) -> io::Result<SocketAddr> {
-        debug!("binding: {addr} -> {node_id}");
+    pub fn bind(
+        &mut self,
+        node_id: NodeId,
+        proto: libc::c_int,
+        mut addr: SocketAddr,
+    ) -> io::Result<SocketAddr> {
+        debug!("binding ({}): {addr} -> {node_id}", proto_str(proto));
         let node = self.nodes.get_mut(&node_id).expect("node not found");
         // resolve IP if unspecified
         if addr.ip().is_unspecified() {
@@ -200,7 +216,7 @@ impl Network {
         if addr.port() == 0 {
             let next_ephemeral_port = node.next_ephemeral_port;
             let port = (next_ephemeral_port..=u16::MAX)
-                .find(|port| !node.sockets.contains_key(port))
+                .find(|port| !node.sockets.contains_key(&SocketKey(*port, proto)))
                 .ok_or_else(|| {
                     warn!("ephemeral ports exhausted");
                     io::Error::new(io::ErrorKind::AddrInUse, "no available ephemeral port")
@@ -210,7 +226,7 @@ impl Network {
             addr.set_port(port);
         }
         // insert socket
-        match node.sockets.entry(addr.port()) {
+        match node.sockets.entry(SocketKey(addr.port(), proto)) {
             Entry::Occupied(_) => {
                 warn!("bind() error: address already in use: {addr:?}");
                 return Err(io::Error::new(
@@ -239,7 +255,13 @@ impl Network {
         );
     }
 
-    pub fn deregister_tcp_id(&mut self, node: NodeId, remote_addr: &SocketAddr, tcp_id: u32) {
+    pub fn deregister_tcp_id(
+        &mut self,
+        node: NodeId,
+        proto: libc::c_int,
+        remote_addr: &SocketAddr,
+        tcp_id: u32,
+    ) {
         trace!("deregistering tcp id {} for node {}", tcp_id, node);
 
         // node may have been deleted
@@ -262,7 +284,7 @@ impl Network {
         if let Some(socket) = self
             .nodes
             .get_mut(node_id)
-            .map(|node| node.sockets.get(&remote_addr.port()))
+            .map(|node| node.sockets.get(&SocketKey(remote_addr.port(), proto)))
             .tap_none(|| debug!("No node found for {node_id}"))
             .flatten()
         {
@@ -280,14 +302,14 @@ impl Network {
         }
     }
 
-    pub fn signal_connect(&self, src: SocketAddr, dst: SocketAddr) -> bool {
+    pub fn signal_connect(&self, proto: libc::c_int, src: SocketAddr, dst: SocketAddr) -> bool {
         let node = self.get_node_for_addr(&dst.ip());
         if node.is_none() {
             return false;
         }
         let node = node.unwrap();
 
-        let dst_socket = self.nodes[&node].sockets.get(&dst.port());
+        let dst_socket = self.nodes[&node].sockets.get(&SocketKey(dst.port(), proto));
 
         if let Some(dst_socket) = dst_socket {
             dst_socket.lock().unwrap().signal_connect(src);
@@ -297,22 +319,31 @@ impl Network {
         }
     }
 
-    pub fn accept_connect(&self, node: NodeId, listening: SocketAddr) -> Option<SocketAddr> {
-        let socket = self.nodes[&node].sockets.get(&listening.port()).unwrap();
+    pub fn accept_connect(
+        &self,
+        proto: libc::c_int,
+        node: NodeId,
+        listening: SocketAddr,
+    ) -> Option<SocketAddr> {
+        let socket = self.nodes[&node]
+            .sockets
+            .get(&SocketKey(listening.port(), proto))
+            .unwrap();
         socket.lock().unwrap().accept_connect()
     }
 
-    pub fn close(&mut self, node_id: NodeId, addr: SocketAddr) {
+    pub fn close(&mut self, proto: libc::c_int, node_id: NodeId, addr: SocketAddr) {
         if let Some(node) = self.nodes.get_mut(&node_id) {
             debug!("close: {node_id} {addr}");
             // TODO: simulate TIME_WAIT?
-            node.sockets.remove(&addr.port());
+            node.sockets.remove(&SocketKey(addr.port(), proto));
         }
     }
 
     pub fn send(
         &mut self,
         node_id: NodeId,
+        proto: libc::c_int,
         src: SocketAddr,
         dst: SocketAddr,
         tag: u64,
@@ -383,7 +414,7 @@ impl Network {
             }
         }
 
-        let mailbox = match node.sockets.get(&dst.port()) {
+        let mailbox = match node.sockets.get(&SocketKey(dst.port(), proto)) {
             Some(mailbox) => Arc::downgrade(mailbox),
             None => {
                 debug!("destination port not available: {dst}");
@@ -420,15 +451,27 @@ impl Network {
         Ok(())
     }
 
-    pub fn recv(&mut self, node: NodeId, dst: SocketAddr, tag: u64) -> oneshot::Receiver<Message> {
-        self.nodes[&node].sockets[&dst.port()]
+    pub fn recv(
+        &mut self,
+        node: NodeId,
+        proto: libc::c_int,
+        dst: SocketAddr,
+        tag: u64,
+    ) -> oneshot::Receiver<Message> {
+        self.nodes[&node].sockets[&SocketKey(dst.port(), proto)]
             .lock()
             .unwrap()
             .recv(tag)
     }
 
-    pub fn recv_sync(&mut self, node: NodeId, dst: SocketAddr, tag: u64) -> Option<Message> {
-        self.nodes[&node].sockets[&dst.port()]
+    pub fn recv_sync(
+        &mut self,
+        node: NodeId,
+        proto: libc::c_int,
+        dst: SocketAddr,
+        tag: u64,
+    ) -> Option<Message> {
+        self.nodes[&node].sockets[&SocketKey(dst.port(), proto)]
             .lock()
             .unwrap()
             .recv_sync(tag)
@@ -438,10 +481,11 @@ impl Network {
         &self,
         cx: Option<&mut Context<'_>>,
         node: NodeId,
+        proto: libc::c_int,
         dst: SocketAddr,
         tag: u64,
     ) -> bool {
-        self.nodes[&node].sockets[&dst.port()]
+        self.nodes[&node].sockets[&SocketKey(dst.port(), proto)]
             .lock()
             .unwrap()
             .recv_ready(cx, tag)

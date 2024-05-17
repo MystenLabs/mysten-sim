@@ -350,7 +350,7 @@ impl TcpStream {
     }
 
     async fn connect_addr(addr: impl ToSocketAddrs) -> io::Result<TcpStream> {
-        let ep = Arc::new(Endpoint::connect(addr).await?);
+        let ep = Arc::new(Endpoint::connect(libc::SOCK_STREAM, addr).await?);
         trace!("connect {:?}", ep.local_addr());
 
         let remote_sock = ep.peer_addr()?;
@@ -714,7 +714,7 @@ impl TcpSocket {
     }
 
     pub fn bind(&self, addr: StdSocketAddr) -> io::Result<()> {
-        let ep = Endpoint::bind_sync(addr)?;
+        let ep = Endpoint::bind_sync(libc::SOCK_STREAM, addr)?;
         *self.bind_addr.lock().unwrap() = Some(ep.into());
         Ok(())
     }
