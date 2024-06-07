@@ -285,8 +285,14 @@ impl Executor {
                     if let Some(restart_after) = panic_info.restart_after {
                         let task = self.spawn_on_main_task(async move {
                             crate::time::sleep(restart_after).await;
-                            info!("restarting node {}", node_id);
-                            runtime::Handle::current().restart(node_id);
+
+                            let handle = runtime::Handle::current();
+                            // the node may have been deleted by the test harness
+                            // before the restart timer fires.
+                            if handle.task.get_node(node_id).is_some() {
+                                info!("restarting node {}", node_id);
+                                runtime::Handle::current().restart(node_id);
+                            }
                         });
 
                         task.fallible().detach();
