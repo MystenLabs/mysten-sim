@@ -4,7 +4,7 @@ use std::{
     future::Future,
     io,
     net::SocketAddr as StdSocketAddr,
-    os::unix::io::{AsRawFd, FromRawFd, IntoRawFd, RawFd},
+    os::unix::io::{AsFd, AsRawFd, BorrowedFd, FromRawFd, IntoRawFd, RawFd},
     pin::Pin,
     sync::{
         atomic::{AtomicBool, AtomicU32, Ordering},
@@ -774,6 +774,12 @@ impl FromRawFd for TcpStream {
 impl IntoRawFd for TcpStream {
     fn into_raw_fd(self) -> RawFd {
         unimplemented!("into_raw_fd not supported in simulator")
+    }
+}
+
+impl AsFd for TcpStream {
+    fn as_fd(&self) -> BorrowedFd<'_> {
+        unimplemented!("as_fd not supported in simulator")
     }
 }
 
