@@ -70,7 +70,14 @@ pub struct NetSim {
     host_state: Mutex<HostNetworkState>,
     rand: GlobalRng,
     time: TimeHandle,
+
+    // Stores for each node, what is the next tcp id that should be used.
+    // This value is monitonically increasing.
     next_tcp_id_map: Mutex<HashMap<NodeId, u32>>,
+
+    // Stores for each ip, what are the tcp ids that are used.
+    // When creating new tcp ids, we need to make sure that they are unique.
+    occupied_ip_tcp_ids: Mutex<HashMap<IpAddr, HashSet<u32>>>,
 }
 
 #[derive(Debug)]
@@ -897,6 +904,7 @@ impl plugin::Simulator for NetSim {
             time: time.clone(),
             host_state: Default::default(),
             next_tcp_id_map: Mutex::new(HashMap::new()),
+            occupied_ip_tcp_ids: Mutex::new(HashMap::new()),
         }
     }
 
@@ -991,20 +999,44 @@ impl NetSim {
         self.time.sleep(delay).await;
     }
 
+    // Checks if for a particular tcp id, whether it has been used on this address before
+    // or not.
+    fn tcp_id_for_ip_exist(existing_tcp_id_set: &HashMap<IpAddr, HashSet<u32>>, tcp_id: u32, ip: &IpAddr) -> bool {
+        if let Some(existing_tcp_ids) = existing_tcp_id_set.get(ip) {
+            existing_tcp_ids.contains(&tcp_id)
+        } else {
+            false
+        }
+    }
+
     /// Get the next unused tcp id for this node.
-    pub fn next_tcp_id(&self, node: NodeId) -> u32 {
+    pub fn next_tcp_id(&self, node: NodeId, ip: IpAddr) -> u32 {
         let mut map = self.next_tcp_id_map.lock().unwrap();
+        let mut existing_tcp_id_set = self.occupied_ip_tcp_ids.lock().unwrap();
         match map.entry(node) {
             Entry::Occupied(mut cur) => {
                 let cur = cur.get_mut();
                 // limited to 2^32 - 1 tcp sessions per node per simulation run.
+                // Also, make sure that the tcp id is never used on this ip address before.
                 *cur = cur.checked_add(1).unwrap();
+                while Self::tcp_id_for_ip_exist(&existing_tcp_id_set, *cur, &ip) {
+                    *cur = cur.checked_add(1).unwrap();
+                }
+                assert!(existing_tcp_id_set.entry(ip.clone()).or_insert_with(HashSet::new).insert(*cur));
                 *cur
             }
             Entry::Vacant(e) => {
                 // tcp ids start at 1, 0 is used for new connections (see poll_accept_internal)
-                e.insert(1);
-                1
+                // Also, make sure that the tcp id is never used on this ip address before.
+                // Note that when a node restarts, it uses a new NodeId with the same ip address.
+                // Therefore, we cannot guarantee uniqueness simply by enforcing uniqueness per node.
+                let mut cur: u32 = 1;
+                while Self::tcp_id_for_ip_exist(&existing_tcp_id_set, cur, &ip) {
+                    cur = cur.checked_add(1).unwrap();
+                }
+                e.insert(cur);
+                assert!(existing_tcp_id_set.entry(ip.clone()).or_insert_with(HashSet::new).insert(cur));
+                cur
             }
         }
     }
@@ -1026,6 +1058,7 @@ impl std::fmt::Debug for Endpoint {
             .field("node", &self.node)
             .field("addr", &self.addr)
             .field("peer", &self.peer)
+            .field("proto", &self.proto)
             .finish()
     }
 }
@@ -1111,7 +1144,7 @@ impl Endpoint {
 
     /// Allocate a new tcp id number for this node. Ids are never reused.
     pub fn allocate_local_tcp_id(&self) -> u32 {
-        let id = self.net.next_tcp_id(self.node);
+        let id = self.net.next_tcp_id(self.node, self.addr.ip());
         trace!(
             "Allocate local tcp id {} to node {} address {}",
             id,
