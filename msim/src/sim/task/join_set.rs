@@ -96,7 +96,7 @@ impl<T: 'static> JoinSet<T> {
         std::mem::swap(&mut new_inner, &mut self.inner);
     }
 
-    fn poll_join_next(&mut self, cx: &mut Context<'_>) -> Poll<Option<Result<T, JoinError>>> {
+    pub fn poll_join_next(&mut self, cx: &mut Context<'_>) -> Poll<Option<Result<T, JoinError>>> {
         let pinned = Pin::new(&mut self.inner);
         pinned.poll_next(cx)
     }
