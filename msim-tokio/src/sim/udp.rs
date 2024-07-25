@@ -83,8 +83,12 @@ impl UdpSocket {
         Ok(())
     }
 
-    pub async fn ready(&self, _interest: Interest) -> io::Result<Ready> {
-        todo!()
+    pub async fn ready(&self, interest: Interest) -> io::Result<Ready> {
+        match interest {
+            Interest::READABLE => Ok(Ready::READABLE),
+            Interest::WRITABLE => Ok(Ready::WRITABLE),
+            _ => unimplemented!("unhandled interest flag {:?}", interest),
+        }
     }
 
     pub async fn writable(&self) -> io::Result<()> {
