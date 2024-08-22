@@ -39,6 +39,8 @@ mod sim {
     pub use real_tokio::signal;
     #[cfg(feature = "sync")]
     pub use real_tokio::sync;
+    #[cfg(feature = "rt")]
+    pub use real_tokio::task_local;
     #[cfg(feature = "macros")]
     pub use real_tokio::{join, main, select, try_join};
 }
