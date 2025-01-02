@@ -236,6 +236,15 @@ unsafe extern "C" fn getrandom(mut buf: *mut u8, mut buflen: usize, _flags: u32)
     compile_error!("unsupported os");
 }
 
+#[no_mangle]
+#[inline(never)]
+unsafe extern "C" fn CCRandomGenerateBytes(bytes: *mut u8, size: usize) -> libc::CCRNGStatus {
+    let ret = getrandom(bytes, size, 0);
+    assert!(ret >= 0);
+    assert_eq!(ret as usize, size);
+    libc::kCCSuccess
+}
+
 /// Fill a buffer with random bytes.
 ///
 /// # Safety
