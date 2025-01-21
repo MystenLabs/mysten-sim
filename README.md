@@ -36,7 +36,7 @@ This fork modifies the original project to produce a drop-in replacement for tok
 
 4. Now, in this repo
 
-    1. Edit the version in `msim-tokio/Cargo.toml` to match the version we are upgrading to (`1.38.1` in this example).
+    1. Edit the version in `msim-tokio/Cargo.toml` to match the version we are upgrading to (`1.43.0` in this example).
     2. Find all references to `https://github.com/MystenLabs/tokio-msim-fork.git` in Cargo.toml files in this repo and update the `rev` param to `FORK_COMMIT`.
 
 5. Now, in the sui repo, update the tokio version by editing Cargo.toml, or by running:
