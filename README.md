@@ -45,9 +45,9 @@ This fork modifies the original project to produce a drop-in replacement for tok
 
 6. Install simtest (if you already have it, skip this step): https://github.com/MystenLabs/sui/blob/main/scripts/simtest/install.sh
 
-7. Test all the changes against your local msim repo - if there are build errors the rebasing may have gone wrong.
+7. Test all the changes against your local msim repo - if there are build errors the rebasing may have gone wrong. Make sure to put the correct path for the LOCAL_MSIM_PATH variable.
         $ cd sui
-        $ LOCAL_MSIM_PATH=/path/to/mysten-sim/msim cargo simtest
+        $ LOCAL_MSIM_PATH=/path/to/mysten-sim cargo simtest
 
 
 ## Usage:
