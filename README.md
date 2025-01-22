@@ -49,6 +49,7 @@ This fork modifies the original project to produce a drop-in replacement for tok
         $ cd sui
         $ LOCAL_MSIM_PATH=/path/to/mysten-sim cargo simtest
 
+8. If you're updating tokio because it needs to be updated in `sui` monorepo, then make sure to update all `rev` fields of `msim` in `sui` monorepo to point to the right commit from this repository (including script files!).
 
 ## Usage:
 
