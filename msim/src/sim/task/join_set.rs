@@ -87,6 +87,19 @@ impl<T: 'static> JoinSet<T> {
         while self.join_next().await.is_some() {}
     }
 
+    pub async fn join_all(mut self) -> Vec<T> {
+        let mut output = Vec::with_capacity(self.len());
+
+        while let Some(res) = self.join_next().await {
+            match res {
+                Ok(t) => output.push(t),
+                Err(err) if err.is_panic() => std::panic::resume_unwind(err.into_panic()),
+                Err(err) => panic!("{err}"),
+            }
+        }
+        output
+    }
+
     pub fn abort_all(&mut self) {
         self.inner.iter().for_each(|jh| jh.abort());
     }
