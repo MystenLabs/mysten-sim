@@ -252,6 +252,8 @@ pub async fn advance(_duration: Duration) {
     unimplemented!("cannot advance clock in simulation - use sleep() instead");
 }
 
+/// Supply tokio::time::pause() API (for compilation only - this method is meaningless inside the
+/// simulator).
 pub fn pause() {
     unimplemented!("cannot pause clock in simulation");
 }
