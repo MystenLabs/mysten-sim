@@ -282,6 +282,29 @@ struct Clock {
     base_instant: Instant,
     /// The amount of mock time which has elapsed.
     elapsed_time: Duration,
+
+    /// Reset every time the clock is advanced.
+    /// Decremented every time the clock is read.
+    /// If it reaches 0, we panic - otherwise code like
+    /// while Instant::now() < deadline { ... } will spin forever.
+    abort_counter: u32,
+}
+
+impl Clock {
+    const ABORT_COUNTER_START: u32 = 100_000_000;
+
+    #[inline(always)]
+    fn check_abort(&mut self) {
+        self.abort_counter -= 1;
+        if self.abort_counter == 0 {
+            panic!("Likely infinite loop detected: clock sampled too many times without advancing");
+        }
+    }
+
+    #[inline(always)]
+    fn reset_abort_counter(&mut self) {
+        self.abort_counter = Self::ABORT_COUNTER_START;
+    }
 }
 
 impl ClockHandle {
@@ -289,13 +312,14 @@ impl ClockHandle {
 
     fn new(base_time: SystemTime) -> Self {
         let base_instant: Instant = unsafe { std::mem::zeroed() };
-        let clock = Clock {
+        let mut clock = Clock {
             base_time,
             base_instant,
             // Some code subtracts constant durations from Instant::now(), which underflows if the base
             // instant is too small. That code is incorrect but we'll just make life easy anyway by
             // starting the clock with one day of elapsed time.
             elapsed_time: Self::CLOCK_BASE,
+            abort_counter: Clock::ABORT_COUNTER_START,
         };
         ClockHandle {
             inner: Arc::new(Mutex::new(clock)),
@@ -310,15 +334,18 @@ impl ClockHandle {
         let mut inner = self.inner.lock().unwrap();
         // prevent time from going backwards - otherwise this can happen when timers are late.
         inner.elapsed_time = std::cmp::max(inner.elapsed_time, time);
+        inner.reset_abort_counter();
     }
 
     fn elapsed(&self) -> Duration {
-        let inner = self.inner.lock().unwrap();
+        let mut inner = self.inner.lock().unwrap();
+        inner.check_abort();
         inner.elapsed_time
     }
 
     fn advance(&self, duration: Duration) {
         let mut inner = self.inner.lock().unwrap();
+        inner.reset_abort_counter();
         inner.elapsed_time += duration;
     }
 
@@ -328,12 +355,14 @@ impl ClockHandle {
     }
 
     fn now_instant(&self) -> Instant {
-        let inner = self.inner.lock().unwrap();
+        let mut inner = self.inner.lock().unwrap();
+        inner.check_abort();
         inner.base_instant + inner.elapsed_time
     }
 
     fn now_time(&self) -> SystemTime {
-        let inner = self.inner.lock().unwrap();
+        let mut inner = self.inner.lock().unwrap();
+        inner.check_abort();
         inner.base_time + inner.elapsed_time
     }
 }
