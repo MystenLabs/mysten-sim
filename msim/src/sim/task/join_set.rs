@@ -17,7 +17,7 @@ use crate::task::{AbortHandle, JoinError, JoinHandle};
 
 use tokio::task::LocalSet;
 
-pub struct JoinSet<T: 'static> {
+pub struct JoinSet<T> {
     inner: FuturesUnordered<JoinHandle<T>>,
 }
 
@@ -115,7 +115,7 @@ impl<T: 'static> JoinSet<T> {
     }
 }
 
-impl<T: 'static> Drop for JoinSet<T> {
+impl<T> Drop for JoinSet<T> {
     fn drop(&mut self) {
         self.inner
             .iter()
