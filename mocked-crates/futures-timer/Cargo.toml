@@ -1,6 +1,6 @@
 [package]
 name = "futures-timer"
-version = "3.0.2"
+version = "3.0.3"
 authors = ["Mysten Labs"]
 edition = "2021"
 license = "MIT/Apache-2.0"
