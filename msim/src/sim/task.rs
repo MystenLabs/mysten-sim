@@ -1,5 +1,17 @@
 //! Asynchronous tasks executor.
 
+use super::{
+    context,
+    rand::GlobalRng,
+    runtime,
+    time::{TimeHandle, TimeRuntime},
+    utils::mpsc,
+};
+use crate::assert_send_sync;
+use async_task::{FallibleTask, Runnable};
+use erasable::{ErasablePtr, ErasedPtr};
+use futures::pin_mut;
+use rand::Rng;
 use std::{
     collections::HashMap,
     fmt,
@@ -9,33 +21,17 @@ use std::{
     pin::Pin,
     sync::{
         atomic::{AtomicBool, AtomicU64, Ordering},
-        Arc,
-        Mutex,
+        Arc, Mutex,
     },
     task::{Context, Poll},
     time::Duration,
 };
 
-use async_task::{FallibleTask, Runnable};
-use erasable::{ErasablePtr, ErasedPtr};
-use futures::pin_mut;
-use rand::Rng;
-pub use tokio::{
-    msim_adapter::{join_error, runtime_task},
-    select,
-    sync::watch,
-    task::{yield_now, JoinError},
-};
 use tracing::{error_span, info, trace, Span};
 
-use super::{
-    context,
-    rand::GlobalRng,
-    runtime,
-    time::{TimeHandle, TimeRuntime},
-    utils::mpsc,
-};
-use crate::assert_send_sync;
+pub use tokio::msim_adapter::{join_error, runtime_task};
+pub use tokio::task::{yield_now, JoinError};
+pub use tokio::{select, sync::watch};
 
 pub mod join_set;
 pub use join_set::JoinSet;
@@ -112,7 +108,7 @@ pub fn shutdown_all_nodes() {
 
 /// Kill the current node by panicking with a special type that tells the executor to kill the
 /// current node instead of terminating the test.
-pub fn kill_current_node(restart_after: Option<Duration>) -> ! {
+pub fn kill_current_node(restart_after: Option<Duration>) {
     let handle = runtime::Handle::current();
     let restart_after = restart_after.unwrap_or_else(|| {
         Duration::from_millis(handle.rand.with(|rng| rng.gen_range(1000..3000)))
@@ -125,7 +121,7 @@ pub fn shutdown_current_node() {
     kill_current_node_impl(runtime::Handle::current(), None);
 }
 
-fn kill_current_node_impl(handle: runtime::Handle, restart_after: Option<Duration>) -> ! {
+fn kill_current_node_impl(handle: runtime::Handle, restart_after: Option<Duration>) {
     let cur_node_id = context::current_node();
 
     if let Some(restart_after) = restart_after {
@@ -138,7 +134,7 @@ fn kill_current_node_impl(handle: runtime::Handle, restart_after: Option<Duratio
     }
     handle.kill(cur_node_id);
     // panic with PanicWrapper so that run_all_ready can intercept it.
-    std::panic::panic_any(PanicWrapper { restart_after })
+    std::panic::panic_any(PanicWrapper { restart_after });
 }
 
 pub(crate) struct TaskInfo {
@@ -721,15 +717,13 @@ impl fmt::Debug for AbortHandle {
 
 #[cfg(test)]
 mod tests {
-    use std::{collections::HashSet, sync::atomic::AtomicUsize, time::Duration};
-
-    use join_set::JoinSet;
-
     use super::*;
     use crate::{
         runtime::{Handle, NodeHandle, Runtime},
         time,
     };
+    use join_set::JoinSet;
+    use std::{collections::HashSet, sync::atomic::AtomicUsize, time::Duration};
 
     #[test]
     fn spawn_in_block_on() {
