@@ -108,7 +108,7 @@ pub fn shutdown_all_nodes() {
 
 /// Kill the current node by panicking with a special type that tells the executor to kill the
 /// current node instead of terminating the test.
-pub fn kill_current_node(restart_after: Option<Duration>) {
+pub fn kill_current_node(restart_after: Option<Duration>) -> ! {
     let handle = runtime::Handle::current();
     let restart_after = restart_after.unwrap_or_else(|| {
         Duration::from_millis(handle.rand.with(|rng| rng.gen_range(1000..3000)))
@@ -121,7 +121,7 @@ pub fn shutdown_current_node() {
     kill_current_node_impl(runtime::Handle::current(), None);
 }
 
-fn kill_current_node_impl(handle: runtime::Handle, restart_after: Option<Duration>) {
+fn kill_current_node_impl(handle: runtime::Handle, restart_after: Option<Duration>) -> ! {
     let cur_node_id = context::current_node();
 
     if let Some(restart_after) = restart_after {
@@ -134,7 +134,7 @@ fn kill_current_node_impl(handle: runtime::Handle, restart_after: Option<Duratio
     }
     handle.kill(cur_node_id);
     // panic with PanicWrapper so that run_all_ready can intercept it.
-    std::panic::panic_any(PanicWrapper { restart_after });
+    std::panic::panic_any(PanicWrapper { restart_after })
 }
 
 pub(crate) struct TaskInfo {
