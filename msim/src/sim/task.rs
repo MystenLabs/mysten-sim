@@ -352,6 +352,7 @@ impl TaskHandle {
 
         let mut nodes = self.nodes.lock().unwrap();
         let node = nodes.get_mut(&id).expect("node not found");
+        tracing::error!("killing node {}; num runnables: {}", id, node.paused.len());
         node.paused.clear();
         let new_info = Arc::new(TaskInfo::new(id, node.info.name()));
         let old_info = std::mem::replace(&mut node.info, new_info);
