@@ -1,6 +1,6 @@
 [package]
 name = "tokio"
-version = "1.46.1"
+version = "1.47.1"
 edition = "2021"
 authors = ["Runji Wang <wangrunji0408@163.com>", "Mysten Labs <build@mystenlabs.com>"]
 description = "The `tokio` simulator on msim."
