@@ -60,3 +60,9 @@ harness = false
 # all-features = true
 rustc-args = ["--cfg", "msim"]
 rustdoc-args = ["--cfg", "msim", "--cfg", "docsrs"]
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = [
+  'cfg(msim)',
+  'cfg(tokio_unstable)',
+] }

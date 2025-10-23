@@ -88,7 +88,7 @@ impl GlobalRng {
             fn hash_u128(x: u128) -> u8 {
                 x.to_ne_bytes().iter().fold(0, |a, b| a ^ b)
             }
-            let v = lock.rng.clone().gen::<u8>() ^ hash_u128(t.unwrap_or_default().as_nanos());
+            let v = lock.rng.clone().r#gen::<u8>() ^ hash_u128(t.unwrap_or_default().as_nanos());
             if let Some(log) = &mut lock.log {
                 log.push(v);
             }
@@ -153,7 +153,7 @@ pub fn random<T>() -> T
 where
     Standard: Distribution<T>,
 {
-    thread_rng().gen()
+    thread_rng().r#gen()
 }
 
 /// Random log for determinism check.
@@ -195,12 +195,12 @@ unsafe extern "C" fn getrandom(mut buf: *mut u8, mut buflen: usize, _flags: u32)
         // inside a msim context, use the global RNG.
         let len = buflen;
         while buflen >= std::mem::size_of::<u64>() {
-            (buf as *mut u64).write(rand.with(|rng| rng.gen()));
+            (buf as *mut u64).write(rand.with(|rng| rng.r#gen()));
             buf = buf.add(std::mem::size_of::<u64>());
             buflen -= std::mem::size_of::<u64>();
         }
         if buflen > 0 {
-            let val = rand.with(|rng| rng.gen::<u64>().to_ne_bytes());
+            let val = rand.with(|rng| rng.r#gen::<u64>().to_ne_bytes());
             core::ptr::copy(val.as_ptr(), buf, buflen);
         }
         return len as _;

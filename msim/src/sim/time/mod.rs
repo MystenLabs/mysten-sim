@@ -312,7 +312,7 @@ impl ClockHandle {
 
     fn new(base_time: SystemTime) -> Self {
         let base_instant: Instant = unsafe { std::mem::zeroed() };
-        let mut clock = Clock {
+        let clock = Clock {
             base_time,
             base_instant,
             // Some code subtracts constant durations from Instant::now(), which underflows if the base

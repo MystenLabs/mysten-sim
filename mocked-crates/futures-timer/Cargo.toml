@@ -25,3 +25,8 @@ wasm-bindgen = [
     "gloo-timers",
     "send_wrapper"
 ]
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = [
+  'cfg(msim)',
+] }

@@ -40,7 +40,10 @@ use std::{
     io,
     net::{IpAddr, Ipv4Addr, SocketAddr, ToSocketAddrs},
     os::unix::io::{AsFd, AsRawFd, BorrowedFd, RawFd},
-    sync::{Arc, atomic::{AtomicU32, Ordering}, Mutex},
+    sync::{
+        atomic::{AtomicU32, Ordering},
+        Arc, Mutex,
+    },
     task::Context,
 };
 use tap::TapFallible;
@@ -70,7 +73,7 @@ pub struct NetSim {
     host_state: Mutex<HostNetworkState>,
     rand: GlobalRng,
     time: TimeHandle,
-    next_tcp_id: AtomicU32,  // We always allocate new globally unique tcp id.
+    next_tcp_id: AtomicU32, // We always allocate new globally unique tcp id.
 }
 
 #[derive(Debug)]
@@ -330,10 +333,7 @@ unsafe fn accept_impl(
             let net = plugin::simulator::<NetSim>();
             let network = net.network.lock().unwrap();
 
-            let endpoint = socket
-                .endpoint
-                .as_ref()
-                .ok_or_else(|| ((-1, libc::EINVAL)))?;
+            let endpoint = socket.endpoint.as_ref().ok_or_else(|| (-1, libc::EINVAL))?;
 
             if endpoint.peer.is_some() {
                 // attempt to accept on a socket that is already connected.
