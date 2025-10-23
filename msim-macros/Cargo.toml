@@ -18,3 +18,8 @@ darling = "0.14"
 proc-macro2 = "1"
 quote = "1"
 syn = "1"
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = [
+  'cfg(msim)',
+] }

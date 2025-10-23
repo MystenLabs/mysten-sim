@@ -18,3 +18,7 @@ msim-macros = { path = "../../msim-macros" }
 tokio = { path = "../../msim-tokio" }
 futures-timer = { path = "../../mocked-crates/futures-timer" }
 
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = [
+  'cfg(msim)',
+] }

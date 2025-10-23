@@ -61,7 +61,7 @@ impl Runtime {
     /// Create a new runtime instance with given seed and config.
     pub fn with_seed_and_config(seed: u64, config: SimConfig) -> Self {
         let mut rand = rand::GlobalRng::new_with_seed(seed);
-        tokio::msim_adapter::util::reset_rng(rand.gen::<u64>());
+        tokio::msim_adapter::util::reset_rng(rand.r#gen::<u64>());
         let task = task::Executor::new(rand.clone());
         let handle = Handle {
             rand: rand.clone(),
@@ -167,7 +167,7 @@ impl Runtime {
     ///
     /// let f = || async {
     ///     for _ in 0..10 {
-    ///         msim::rand::thread_rng().gen::<u64>();
+    ///         msim::rand::thread_rng().r#gen::<u64>();
     ///         // introduce non-determinism
     ///         let rand_num = rand::thread_rng().gen_range(0..10);
     ///         sleep(Duration::from_nanos(rand_num)).await;
@@ -365,6 +365,7 @@ impl Handle {
 }
 
 /// Guard for entering handle
+#[allow(dead_code)]
 pub struct EnterGuard(context::EnterGuard);
 
 /// Builds a node with custom configurations.
@@ -429,6 +430,7 @@ impl<'a> NodeBuilder<'a> {
 
 /// Guard for entering a node context.
 #[must_use]
+#[allow(dead_code)]
 pub struct NodeEnterGuard(TaskEnterGuard);
 
 /// Handle to a node.

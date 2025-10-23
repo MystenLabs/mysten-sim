@@ -27,10 +27,10 @@ impl Default for RandomState {
     fn default() -> Self {
         let mut rng = thread_rng();
         Self(ahash::RandomState::with_seeds(
-            rng.gen(),
-            rng.gen(),
-            rng.gen(),
-            rng.gen(),
+            rng.r#gen(),
+            rng.r#gen(),
+            rng.r#gen(),
+            rng.r#gen(),
         ))
     }
 }

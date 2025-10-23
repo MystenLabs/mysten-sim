@@ -256,7 +256,7 @@ fn parse_test(mut input: syn::ItemFn, args: syn::AttributeArgs) -> Result<TokenS
 
             fn next_seed(seed: u64) -> u64 {
                 use #crate_ident::rand::Rng;
-                #crate_ident::rand::GlobalRng::new_with_seed(seed).gen::<u64>()
+                #crate_ident::rand::GlobalRng::new_with_seed(seed).r#gen::<u64>()
             }
 
             let mut rand_log = None;

@@ -32,6 +32,7 @@ macro_rules! assert_send_sync {
             fn assert_send<T: Send>() {}
             fn assert_sync<T: Sync>() {}
 
+            #[allow(dead_code)]
             fn assert_all() {
                 assert_send::<$name>();
                 assert_sync::<$name>();
