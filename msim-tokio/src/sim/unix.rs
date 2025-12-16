@@ -17,7 +17,7 @@ use std::{
 use real_tokio::io::{AsyncRead, AsyncWrite, Interest, ReadBuf, Ready};
 
 pub use real_tokio::net::unix::UCred;
-pub use std::net::SocketAddr;
+pub use std::os::unix::net::SocketAddr;
 
 /// Provide the tokio::net::UnixListener interface.
 #[derive(Debug)]
@@ -33,7 +33,7 @@ impl UnixListener {
     }
 
     /// todo
-    pub fn from_std(listener: UnixListener) -> io::Result<UnixListener> {
+    pub fn from_std(listener: std::os::unix::net::UnixListener) -> io::Result<UnixListener> {
         todo!()
     }
 
@@ -140,7 +140,7 @@ impl UnixStream {
     }
 
     /// todo
-    pub fn from_std(stream: UnixStream) -> io::Result<UnixStream> {
+    pub fn from_std(stream: std::os::unix::net::UnixStream) -> io::Result<UnixStream> {
         todo!()
     }
 
