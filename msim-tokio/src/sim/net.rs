@@ -660,44 +660,74 @@ impl TcpSocket {
         unimplemented!("ipv6 not supported in simulator");
     }
 
+    pub fn set_keepalive(&self, _keepalive: bool) -> io::Result<()> {
+        // No-op in simulator
+        Ok(())
+    }
+
+    pub fn keepalive(&self) -> io::Result<bool> {
+        // Return false as default in simulator
+        Ok(false)
+    }
+
+    pub fn set_nodelay(&self, _nodelay: bool) -> io::Result<()> {
+        // No-op in simulator
+        Ok(())
+    }
+
+    pub fn nodelay(&self) -> io::Result<bool> {
+        // Return false as default in simulator
+        Ok(false)
+    }
+
     pub fn set_reuseaddr(&self, _reuseaddr: bool) -> io::Result<()> {
-        todo!()
+        // No-op in simulator
+        Ok(())
     }
 
     pub fn reuseaddr(&self) -> io::Result<bool> {
-        todo!()
+        // Return false as default in simulator
+        Ok(false)
     }
 
     pub fn set_reuseport(&self, _reuseport: bool) -> io::Result<()> {
-        todo!()
+        // No-op in simulator
+        Ok(())
     }
 
     pub fn reuseport(&self) -> io::Result<bool> {
-        todo!()
+        // Return false as default in simulator
+        Ok(false)
     }
 
     pub fn set_send_buffer_size(&self, _size: u32) -> io::Result<()> {
-        todo!()
+        // No-op in simulator
+        Ok(())
     }
 
     pub fn send_buffer_size(&self) -> io::Result<u32> {
-        todo!()
+        // Return a reasonable default in simulator
+        Ok(212992)
     }
 
     pub fn set_recv_buffer_size(&self, _size: u32) -> io::Result<()> {
-        todo!()
+        // No-op in simulator
+        Ok(())
     }
 
     pub fn recv_buffer_size(&self) -> io::Result<u32> {
-        todo!()
+        // Return a reasonable default in simulator
+        Ok(212992)
     }
 
     pub fn set_linger(&self, _dur: Option<Duration>) -> io::Result<()> {
-        todo!()
+        // No-op in simulator
+        Ok(())
     }
 
     pub fn linger(&self) -> io::Result<Option<Duration>> {
-        todo!()
+        // Return None as default in simulator
+        Ok(None)
     }
 
     pub fn local_addr(&self) -> io::Result<StdSocketAddr> {
@@ -710,7 +740,8 @@ impl TcpSocket {
     }
 
     pub fn take_error(&self) -> io::Result<Option<io::Error>> {
-        todo!()
+        // Return None as default in simulator (no pending error)
+        Ok(None)
     }
 
     pub fn bind(&self, addr: StdSocketAddr) -> io::Result<()> {
@@ -729,8 +760,13 @@ impl TcpSocket {
         TcpListener::from_std(listener.into_std()?)
     }
 
-    pub fn from_std_stream(_std_stream: std::net::TcpStream) -> TcpSocket {
-        unimplemented!("from_std_stream not supported in simulator")
+    pub fn from_std_stream(std_stream: std::net::TcpStream) -> TcpSocket {
+        let fd = std_stream.into_raw_fd();
+        let ep = try_get_endpoint_from_socket(fd).ok().flatten();
+        TcpSocket {
+            fd: fd.into(),
+            bind_addr: Mutex::new(ep),
+        }
     }
 }
 
