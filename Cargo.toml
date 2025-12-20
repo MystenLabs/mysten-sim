@@ -10,7 +10,7 @@ exclude = [
     "test-crates/jsonrpsee-test",
 ]
 
-[lints.rust]
+[workspace.lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = [
   'cfg(msim)',
 ] }
