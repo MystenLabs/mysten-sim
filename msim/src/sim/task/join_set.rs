@@ -56,6 +56,14 @@ impl<T: 'static> JoinSet<T> {
         self.insert(crate::task::spawn(task))
     }
 
+    pub fn spawn_blocking<F>(&mut self, task: F) -> AbortHandle
+    where
+        F: FnOnce() -> T + Send + 'static,
+        T: Send + 'static,
+    {
+        self.insert(crate::task::spawn_blocking(task))
+    }
+
     pub fn spawn_local<F>(&mut self, task: F) -> AbortHandle
     where
         F: Future<Output = T>,
