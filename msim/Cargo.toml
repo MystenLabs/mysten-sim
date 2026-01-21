@@ -38,8 +38,8 @@ ahash = "0.7"
 downcast-rs = "1.2"
 libc = "0.2"
 naive-timer = "0.2"
-tokio = { git = "https://github.com/MystenLabs/tokio-msim-fork.git", rev = "c59702c3177a31405d42ec12e01fa4a445728326", package = "real_tokio", features = ["full"] }
-tokio-util = { git = "https://github.com/MystenLabs/tokio-msim-fork.git", rev = "c59702c3177a31405d42ec12e01fa4a445728326", features = ["full"] }
+tokio = { git = "https://github.com/MystenLabs/tokio-msim-fork.git", rev = "6b1da10b18f9a4b1d42b1432415a0b3092908c77" , package = "real_tokio", features = ["full"] }
+tokio-util = { git = "https://github.com/MystenLabs/tokio-msim-fork.git", rev = "6b1da10b18f9a4b1d42b1432415a0b3092908c77", features = ["full"] }
 toml = "0.5"
 socket2 = "0.4"
 erasable = "1.2"
@@ -50,7 +50,7 @@ async-task = { git = "https://github.com/mystenmark/async-task", rev = "4e45b26e
 [dev-dependencies]
 criterion = "0.3"
 structopt = "0.3"
-tokio = { git = "https://github.com/MystenLabs/tokio-msim-fork.git", rev = "c59702c3177a31405d42ec12e01fa4a445728326", package = "real_tokio", features = ["full"] }
+tokio = { git = "https://github.com/MystenLabs/tokio-msim-fork.git", rev = "6b1da10b18f9a4b1d42b1432415a0b3092908c77", package = "real_tokio", features = ["full"] }
 
 [[bench]]
 name = "rpc"
