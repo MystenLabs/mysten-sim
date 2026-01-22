@@ -76,8 +76,27 @@ impl std::fmt::Debug for dyn InterNodeLatency + Send + Sync + 'static {
     }
 }
 
-/// Defines latency between pairs of nodes.jk
+/// Defines latency between pairs of nodes.
 pub struct InterNodeLatencyMap(HashMap<(NodeId, NodeId), LatencyDistribution>);
+
+impl InterNodeLatencyMap {
+    pub fn new() -> Self {
+        Self(HashMap::new())
+    }
+
+    /// Add a latency distribution for both directions of a link.
+    pub fn with_symmetric_link(mut self, a: NodeId, b: NodeId, dist: LatencyDistribution) -> Self {
+        self.0.insert((a, b), dist.clone());
+        self.0.insert((b, a), dist);
+        self
+    }
+}
+
+impl Default for InterNodeLatencyMap {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl InterNodeLatency for InterNodeLatencyMap {
     fn sample(&self, rng: &mut GlobalRng, a: NodeId, b: NodeId) -> Option<Duration> {
@@ -98,6 +117,24 @@ impl InterNodeLatency for InterNodeLatencyMap {
 /// Defines latency from a given node to anywhere else. If a and b are
 /// both in the map, both distributions are sampled and the max is taken.
 pub struct NodeLatencyMap(HashMap<NodeId, LatencyDistribution>);
+
+impl NodeLatencyMap {
+    pub fn new() -> Self {
+        Self(HashMap::new())
+    }
+
+    /// Add a latency distribution for a specific node.
+    pub fn with_node(mut self, node: NodeId, dist: LatencyDistribution) -> Self {
+        self.0.insert(node, dist);
+        self
+    }
+}
+
+impl Default for NodeLatencyMap {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl InterNodeLatency for NodeLatencyMap {
     fn sample(&self, rng: &mut GlobalRng, a: NodeId, b: NodeId) -> Option<Duration> {
@@ -138,9 +175,8 @@ impl LatencyConfig {
         } else {
             self.inter_node_latency
                 .as_ref()
-                .map(|lat| lat.sample(rng, a, b))
-                .unwrap_or_else(|| Some(self.default_latency.sample(rng)))
-                .unwrap()
+                .and_then(|lat| lat.sample(rng, a, b))
+                .unwrap_or_else(|| self.default_latency.sample(rng))
         }
     }
 }
