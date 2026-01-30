@@ -11,99 +11,61 @@ jobs:
   check:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
-      - uses: actions-rs/toolchain@v1
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
         with:
-          profile: minimal
-          toolchain: stable
           components: rustfmt, clippy
       - name: Check code format
-        uses: actions-rs/cargo@v1
-        with:
-          command: fmt
-          args: --all -- --check
+        run: cargo fmt --all -- --check
       - name: Clippy
-        uses: actions-rs/cargo@v1
-        with:
-          command: clippy
-          args: -- -D warnings
+        run: cargo clippy -- -D warnings
       - name: Clippy sim
-        uses: actions-rs/cargo@v1
+        run: cargo clippy -- -D warnings
         env:
           RUSTFLAGS: "--cfg madsim"
-        with:
-          command: clippy
-          args: -- -D warnings
 
   build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
-      - uses: actions-rs/toolchain@v1
-        with:
-          profile: minimal
-          toolchain: stable
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
       - name: Build std
-        uses: actions-rs/cargo@v1
-        with:
-          command: build
+        run: cargo build
       - name: Build sim
-        uses: actions-rs/cargo@v1
+        run: cargo build
         env:
           RUSTFLAGS: "--cfg madsim"
-        with:
-          command: build
 
   test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
-      - uses: actions-rs/toolchain@v1
-        with:
-          profile: minimal
-          toolchain: stable
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
       - name: Test std
-        uses: actions-rs/cargo@v1
-        with:
-          command: test
-          args: --release --no-fail-fast
+        run: cargo test --release --no-fail-fast
       - name: Test sim
-        uses: actions-rs/cargo@v1
+        run: cargo test --release --no-fail-fast
         env:
           RUSTFLAGS: "--cfg madsim"
           RUSTDOCFLAGS: "--cfg madsim"
-        with:
-          command: test
-          args: --release --no-fail-fast
 
   bench:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
-      - uses: actions-rs/toolchain@v1
-        with:
-          profile: minimal
-          toolchain: stable
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
       - name: Bench
-        uses: actions-rs/cargo@v1
-        with:
-          command: bench
-          args: -p madsim
+        run: cargo bench -p msim
+        env:
+          RUSTFLAGS: "--cfg madsim"
 
   doc:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
-      - uses: actions-rs/toolchain@v1
-        with:
-          profile: minimal
-          override: true
-          toolchain: nightly
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
       - name: Doc
-        uses: actions-rs/cargo@v1
+        run: cargo doc --no-deps
         env:
           RUSTFLAGS: "--cfg madsim"
           RUSTDOCFLAGS: "--cfg madsim --cfg docsrs"
-        with:
-          command: doc
-          args: --no-deps
