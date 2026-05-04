@@ -135,8 +135,8 @@ pub fn test(_args: TokenStream, item: TokenStream) -> TokenStream {
 ///
 /// - `MSIM_TEST_CHECK_DETERMINISM`: Enable determinism check.
 ///
-///     The test will be run at least twice with the same seed.
-///     If any non-determinism detected, it will panic as soon as possible.
+///   The test will be run at least twice with the same seed.
+///   If any non-determinism detected, it will panic as soon as possible.
 ///
 ///     By default, it is disabled.
 ///
