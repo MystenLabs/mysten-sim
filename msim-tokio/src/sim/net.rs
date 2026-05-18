@@ -83,7 +83,7 @@ impl TcpListener {
     }
 
     pub async fn accept(&self) -> io::Result<(TcpStream, StdSocketAddr)> {
-        Self::poll_accept_internal(self.ep.clone()).await
+        std::future::poll_fn(|cx| self.poll_accept(cx)).await
     }
 
     async fn poll_accept_internal(ep: Arc<Endpoint>) -> io::Result<(TcpStream, StdSocketAddr)> {
