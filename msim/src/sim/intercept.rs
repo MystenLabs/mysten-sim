@@ -1,5 +1,5 @@
 use std::cell::Cell;
-use tracing::info;
+use tracing::{info, trace};
 
 thread_local! {
     static INTERCEPTS_ENABLED: Cell<bool> = Cell::new(false);
@@ -13,6 +13,18 @@ pub(crate) fn enable_intercepts(e: bool) {
         "{} library call intercepts on thread {:?}",
         if e { "enabling" } else { "disabling" },
         cur_thread
+    );
+    INTERCEPTS_ENABLED.with(|enabled| enabled.set(e))
+}
+
+// Quiet variant for blocking-pool threads: their startup runs concurrently with the
+// main sim thread, so an info-level log here (with a nondeterministic ThreadId) lands
+// at a racy position in otherwise-deterministic log output.
+pub(crate) fn enable_intercepts_quiet(e: bool) {
+    trace!(
+        "{} library call intercepts on thread {:?}",
+        if e { "enabling" } else { "disabling" },
+        std::thread::current().id()
     );
     INTERCEPTS_ENABLED.with(|enabled| enabled.set(e))
 }
