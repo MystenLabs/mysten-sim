@@ -183,13 +183,17 @@ pub fn yield_blocking() {
 
 impl BlockingPool {
     pub fn new(rand: GlobalRng) -> Self {
+        // The pool must be large enough that tasks parked at yield points (waiting for
+        // sim progress) cannot occupy every thread and starve the task that would
+        // unblock them. Threads are cheap: they are spawned lazily, parked when idle,
+        // and idle threads are skipped by wake rounds.
         let num_threads = std::env::var("MSIM_BLOCKING_THREADS")
             .ok()
             .map(|v| {
                 v.parse::<u32>()
                     .expect("MSIM_BLOCKING_THREADS must be a positive integer")
             })
-            .unwrap_or(8);
+            .unwrap_or(128);
         assert!(num_threads > 0, "MSIM_BLOCKING_THREADS must be >= 1");
 
         let (sender, queue) = mpsc::channel();
