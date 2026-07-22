@@ -237,6 +237,13 @@ impl Executor {
 
             let stats = self.handle.blocking.wake_round(&self.rand, &self.time);
 
+            // kill_current_node() panics from blocking tasks are handed back by the
+            // pool (their result-channel wrapper is on the killed node and cannot
+            // deliver them); schedule the requested restarts.
+            for (node_id, err) in stats.panics {
+                self.handle_task_panic(node_id, err);
+            }
+
             // A wake round that started a blocking task, or that scheduled new
             // runnables (e.g. a completed blocking task waking its JoinHandle), is
             // progress in itself; time must not advance in that case, because a
@@ -284,6 +291,31 @@ impl Executor {
         task
     }
 
+    /// Handle a panic payload that escaped a task of `node_id`: a `PanicWrapper` (from
+    /// `kill_current_node`) schedules the requested restart; any other payload
+    /// propagates and fails the test.
+    fn handle_task_panic(&self, node_id: NodeId, err: Box<dyn std::any::Any + Send>) {
+        if let Some(panic_info) = err.downcast_ref::<PanicWrapper>() {
+            if let Some(restart_after) = panic_info.restart_after {
+                let task = self.spawn_on_main_task(async move {
+                    crate::time::sleep(restart_after).await;
+
+                    let handle = runtime::Handle::current();
+                    // the node may have been deleted by the test harness
+                    // before the restart timer fires.
+                    if handle.task.get_node(node_id).is_some() {
+                        info!("restarting node {}", node_id);
+                        runtime::Handle::current().restart(node_id);
+                    }
+                });
+
+                task.fallible().detach();
+            }
+        } else {
+            std::panic::resume_unwind(err);
+        }
+    }
+
     /// Drain all tasks from ready queue and run them.
     fn run_all_ready(&self) {
         let hook_guard = Arc::new(PanicHookGuard::new());
@@ -323,25 +355,7 @@ impl Executor {
             });
 
             if let Err(err) = result {
-                if let Some(panic_info) = err.downcast_ref::<PanicWrapper>() {
-                    if let Some(restart_after) = panic_info.restart_after {
-                        let task = self.spawn_on_main_task(async move {
-                            crate::time::sleep(restart_after).await;
-
-                            let handle = runtime::Handle::current();
-                            // the node may have been deleted by the test harness
-                            // before the restart timer fires.
-                            if handle.task.get_node(node_id).is_some() {
-                                info!("restarting node {}", node_id);
-                                runtime::Handle::current().restart(node_id);
-                            }
-                        });
-
-                        task.fallible().detach();
-                    }
-                } else {
-                    std::panic::resume_unwind(err);
-                }
+                self.handle_task_panic(node_id, err);
             }
 
             // panic guard only runs if runnable.run() panics - in that case
@@ -594,14 +608,16 @@ impl TaskNodeHandle {
                     let _ = tx.send(Ok(v));
                 }
                 Err(e) => {
-                    if e.is::<blocking::AbortBlockingTask>() {
-                        // controlled unwind of a killed task - propagate to the pool
-                        // thread loop, which catches and ignores it.
+                    if e.is::<blocking::AbortBlockingTask>() || e.is::<PanicWrapper>() {
+                        // Propagate to the pool thread loop. An abort unwind is simply
+                        // ignored there. A PanicWrapper (kill_current_node) must be
+                        // handed to the main loop via the pool: it kills this task's
+                        // own node, so the wrapper task below is dead and cannot
+                        // deliver the payload (and the restart would be lost).
                         std::panic::resume_unwind(e);
                     }
-                    // other panics (including PanicWrapper from kill_current_node) are
-                    // re-thrown on the main thread by the wrapper task below, where
-                    // run_all_ready's existing handling applies.
+                    // other panics are re-thrown on the main thread by the wrapper
+                    // task below, where run_all_ready's existing handling applies.
                     let _ = tx.send(Err(e));
                 }
             }
@@ -1276,6 +1292,49 @@ mod tests {
         assert!(!dropped.load(Ordering::SeqCst));
         drop(runtime);
         assert!(dropped.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn spawn_blocking_kill_current_node_restarts() {
+        let runtime = Runtime::new();
+
+        let flag = Arc::new(AtomicUsize::new(0));
+        let flag_ = flag.clone();
+        let node = runtime
+            .create_node()
+            .init(move || {
+                let flag = flag_.clone();
+                async move {
+                    // set flag to 0, then +2 every 2s
+                    flag.store(0, Ordering::SeqCst);
+                    loop {
+                        time::sleep(Duration::from_secs(2)).await;
+                        flag.fetch_add(2, Ordering::SeqCst);
+                    }
+                }
+            })
+            .build();
+
+        runtime.block_on(async move {
+            let t0 = time::Instant::now();
+
+            time::sleep_until(t0 + Duration::from_secs(3)).await;
+            assert_eq!(flag.load(Ordering::SeqCst), 2);
+
+            // kill from a blocking task: the PanicWrapper must reach the main loop
+            // via the pool (the task's own wrapper is killed with the node), so that
+            // the restart is scheduled.
+            node.spawn_blocking(|| {
+                kill_current_node(Some(Duration::from_secs(2)));
+            });
+
+            // killed at ~3s; restart timer fires at ~5s, resetting the flag.
+            time::sleep_until(t0 + Duration::from_secs(6)).await;
+            assert_eq!(flag.load(Ordering::SeqCst), 0);
+
+            time::sleep_until(t0 + Duration::from_secs(8)).await;
+            assert_eq!(flag.load(Ordering::SeqCst), 2);
+        });
     }
 
     #[test]

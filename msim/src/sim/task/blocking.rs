@@ -12,7 +12,7 @@
 //! [`yield_blocking`]-based primitives: an OS-level block on a pool thread never ends
 //! its turn, which hangs the simulator.
 
-use super::TaskInfo;
+use super::{NodeId, PanicWrapper, TaskInfo};
 use crate::rand::GlobalRng;
 use crate::runtime::Handle;
 use crate::sim::utils::mpsc;
@@ -55,6 +55,9 @@ struct QuantumState {
     abort_requested: Vec<bool>,
     /// Tasks dequeued during the current wake round, for progress detection.
     dequeued: usize,
+    /// PanicWrapper payloads (kill_current_node) that escaped blocking tasks, handed to
+    /// the main loop each wake round so it can schedule the requested restarts.
+    pending_panics: Vec<(NodeId, Box<dyn std::any::Any + Send>)>,
 }
 
 struct ThreadQuantum {
@@ -70,6 +73,7 @@ impl ThreadQuantum {
                 current: vec![None; num_threads],
                 abort_requested: vec![false; num_threads],
                 dequeued: 0,
+                pending_panics: Vec::new(),
             }),
             cv: Condvar::new(),
         }
@@ -131,6 +135,9 @@ pub(crate) struct RoundStats {
     pub dequeued: usize,
     /// Whether any blocking work remains (parked mid-task threads or queued tasks).
     pub pending: bool,
+    /// PanicWrapper payloads that escaped blocking tasks this round, for the main loop
+    /// to schedule node restarts.
+    pub panics: Vec<(NodeId, Box<dyn std::any::Any + Send>)>,
 }
 
 struct PoolShared {
@@ -246,13 +253,14 @@ impl BlockingPool {
             return RoundStats {
                 dequeued: 0,
                 pending: false,
+                panics: Vec::new(),
             };
         }
 
         // fast path: nothing to run, resume or abort. (Skipping the shuffle draw is
         // deterministic, since the pool state itself is deterministic.)
         {
-            let s = self.shared.quantum.state.lock().unwrap();
+            let mut s = self.shared.quantum.state.lock().unwrap();
             if s.current.iter().all(|c| c.is_none())
                 && !s.abort_requested.iter().any(|&a| a)
                 && self.shared.queue.is_empty()
@@ -260,6 +268,7 @@ impl BlockingPool {
                 return RoundStats {
                     dequeued: 0,
                     pending: false,
+                    panics: std::mem::take(&mut s.pending_panics),
                 };
             }
         }
@@ -309,10 +318,11 @@ impl BlockingPool {
             time.advance(dur);
         }
 
-        let s = self.shared.quantum.state.lock().unwrap();
+        let mut s = self.shared.quantum.state.lock().unwrap();
         RoundStats {
             dequeued: s.dequeued,
             pending: s.current.iter().any(|c| c.is_some()) || !self.shared.queue.is_empty(),
+            panics: std::mem::take(&mut s.pending_panics),
         }
     }
 
@@ -408,9 +418,21 @@ fn run_blocking_thread(me: u32, shared: Arc<PoolShared>, handle: Handle) {
             run_one(&shared, me);
         }));
         if let Err(err) = result {
-            // Jobs catch their own panics and forward them through their result
-            // channel; only the controlled abort unwind may reach this point.
-            if !err.is::<AbortBlockingTask>() {
+            if err.is::<AbortBlockingTask>() {
+                // controlled unwind of a killed task - nothing to do.
+            } else if err.is::<PanicWrapper>() {
+                // kill_current_node() was called by this task. Its own node is being
+                // killed, so its result-channel wrapper cannot deliver the payload;
+                // hand it to the main loop, which schedules the requested restart.
+                let mut s = shared.quantum.state.lock().unwrap();
+                let info = s.current[me as usize]
+                    .take()
+                    .expect("a panicking task must have been registered as current");
+                s.abort_requested[me as usize] = false;
+                s.pending_panics.push((info.node(), err));
+            } else {
+                // Jobs catch their own panics and forward them through their result
+                // channel; nothing else may reach this point.
                 eprintln!("unexpected panic escaped a blocking task; aborting");
                 std::process::abort();
             }
