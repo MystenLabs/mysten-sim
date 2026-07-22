@@ -84,6 +84,11 @@ impl<T> Receiver<T> {
         }
     }
 
+    /// Returns whether the queue is currently empty.
+    pub fn is_empty(&self) -> bool {
+        self.inner.queue.lock().unwrap().is_empty()
+    }
+
     pub fn clear_inner(&self) {
         let mut old = Vec::new();
         {

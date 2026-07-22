@@ -31,12 +31,17 @@ use tracing::{error_span, info, trace, Span};
 
 pub use tokio::msim_adapter::runtime_task::Id;
 pub use tokio::msim_adapter::{join_error, runtime_task};
+use tokio::sync::oneshot;
 pub use tokio::task::coop;
 pub use tokio::task::{yield_now, JoinError};
 pub use tokio::{select, sync::watch};
 
 pub mod join_set;
 pub use join_set::JoinSet;
+
+pub(crate) mod blocking;
+pub use blocking::yield_blocking;
+use blocking::BlockingPool;
 
 pub(crate) struct Executor {
     queue: mpsc::Receiver<(Runnable, Arc<TaskInfo>)>,
@@ -181,12 +186,14 @@ impl TaskInfo {
 impl Executor {
     pub fn new(rand: GlobalRng) -> Self {
         let (sender, queue) = mpsc::channel();
+        let blocking = Arc::new(BlockingPool::new(rand.clone()));
         Executor {
             queue,
             handle: TaskHandle {
                 nodes: Arc::new(Mutex::new(HashMap::new())),
                 sender,
                 next_node_id: Arc::new(AtomicU64::new(1)),
+                blocking,
             },
             time: TimeRuntime::new(&rand),
             rand,
@@ -218,8 +225,24 @@ impl Executor {
             if let Poll::Ready(val) = Pin::new(&mut task).poll(&mut cx) {
                 return val;
             }
-            let going = self.time.advance_to_next_event();
-            assert!(going, "no events, the task will block forever");
+
+            let stats = self.handle.blocking.wake_round(&self.rand, &self.time);
+
+            // A wake round that started a blocking task, or that scheduled new
+            // runnables (e.g. a completed blocking task waking its JoinHandle), is
+            // progress in itself; time must not advance in that case, because a
+            // blocking task waiting at a yield point may be unblocked by the new work.
+            let progress = stats.dequeued > 0 || !self.queue.is_empty();
+            if !progress {
+                let going = self.time.advance_to_next_event();
+                if !going && stats.pending {
+                    panic!(
+                        "deadlock: blocking tasks are parked but there are no events \
+                         that could unblock them"
+                    );
+                }
+                assert!(going, "no events, the task will block forever");
+            }
             if let Some(limit) = self.time_limit {
                 assert!(
                     self.time.handle().elapsed() < limit,
@@ -316,6 +339,12 @@ impl Executor {
     }
 }
 
+impl Drop for Executor {
+    fn drop(&mut self) {
+        self.handle.blocking.shutdown();
+    }
+}
+
 struct PanicGuard<'a>(&'a Executor);
 impl<'a> Drop for PanicGuard<'a> {
     fn drop(&mut self) {
@@ -337,6 +366,7 @@ pub(crate) struct TaskHandle {
     sender: mpsc::Sender<(Runnable, Arc<TaskInfo>)>,
     nodes: Arc<Mutex<HashMap<NodeId, Node>>>,
     next_node_id: Arc<AtomicU64>,
+    blocking: Arc<BlockingPool>,
 }
 assert_send_sync!(TaskHandle);
 
@@ -358,6 +388,9 @@ impl TaskHandle {
         let new_info = Arc::new(TaskInfo::new(id, node.info.name()));
         let old_info = std::mem::replace(&mut node.info, new_info);
         old_info.killed.send_replace(true);
+
+        // in-flight blocking tasks of this node unwind at their next yield point.
+        self.blocking.request_abort_node(id);
     }
 
     /// Kill all tasks of the node and restart the initial task.
@@ -514,6 +547,48 @@ impl TaskNodeHandle {
         }
     }
 
+    /// Run a closure on the blocking pool, returning a JoinHandle for the result.
+    ///
+    /// The closure runs on a real OS thread, but only when granted a turn by the
+    /// executor (see [`blocking`]). The returned handle is backed by an ordinary async
+    /// task on this node, so abort and kill-on-node-death behave as for other tasks.
+    pub fn spawn_blocking<F, R>(&self, f: F) -> JoinHandle<R>
+    where
+        F: FnOnce() -> R + Send + 'static,
+        R: Send + 'static,
+    {
+        let handle = crate::context::current(|h| h.clone());
+        let (tx, rx) = oneshot::channel();
+        let job: blocking::BlockingFn = Box::new(move || {
+            match std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)) {
+                Ok(v) => {
+                    let _ = tx.send(Ok(v));
+                }
+                Err(e) => {
+                    if e.is::<blocking::AbortBlockingTask>() {
+                        // controlled unwind of a killed task - propagate to the pool
+                        // thread loop, which catches and ignores it.
+                        std::panic::resume_unwind(e);
+                    }
+                    // other panics (including PanicWrapper from kill_current_node) are
+                    // re-thrown on the main thread by the wrapper task below, where
+                    // run_all_ready's existing handling applies.
+                    let _ = tx.send(Err(e));
+                }
+            }
+        });
+        handle.task.blocking.spawn(job, self.info.clone(), &handle);
+        self.spawn(async move {
+            match rx.await {
+                Ok(Ok(v)) => v,
+                Ok(Err(payload)) => std::panic::resume_unwind(payload),
+                // the sender is dropped without sending only when the node is killed,
+                // in which case this task is killed as well and never polled again.
+                Err(_) => unreachable!("blocking task aborted but its node is alive"),
+            }
+        })
+    }
+
     pub fn enter(&self) -> crate::context::TaskEnterGuard {
         crate::context::enter_task(self.info.clone())
     }
@@ -578,7 +653,7 @@ where
     R: Send + 'static,
 {
     let handle = TaskNodeHandle::current();
-    handle.spawn(async move { f() })
+    handle.spawn_blocking(f)
 }
 
 #[derive(Debug)]
