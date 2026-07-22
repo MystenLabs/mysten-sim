@@ -40,8 +40,8 @@ pub mod join_set;
 pub use join_set::JoinSet;
 
 pub(crate) mod blocking;
-pub use blocking::yield_blocking;
 use blocking::BlockingPool;
+pub use blocking::{is_blocking_pool_thread, yield_blocking};
 
 pub(crate) struct Executor {
     queue: mpsc::Receiver<(Runnable, Arc<TaskInfo>)>,

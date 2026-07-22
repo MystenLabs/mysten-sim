@@ -186,6 +186,13 @@ pub fn yield_blocking() {
     });
 }
 
+/// Whether the calling thread is one of the simulator's blocking-pool threads, i.e.
+/// whether [`yield_blocking`] may be called. Lets shared sync/blocking code choose
+/// between quantum yields (pool threads) and its regular blocking behavior.
+pub fn is_blocking_pool_thread() -> bool {
+    POOL_THREAD.with(|p| p.borrow().is_some())
+}
+
 impl BlockingPool {
     pub fn new(rand: GlobalRng) -> Self {
         // The pool must be large enough that tasks parked at yield points (waiting for
