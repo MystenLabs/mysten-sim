@@ -71,10 +71,6 @@ impl Runtime {
             config,
         };
         let rt = Runtime { rand, task, handle };
-        rt.task
-            .handle()
-            .blocking_pool()
-            .set_handle(rt.handle.clone());
         rt.add_simulator::<fs::FsSim>();
         rt.add_simulator::<net::NetSim>();
         intercept::enable_intercepts(true);

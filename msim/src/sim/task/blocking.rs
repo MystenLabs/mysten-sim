@@ -157,8 +157,6 @@ pub(crate) struct BlockingPool {
     shared: Arc<PoolShared>,
     threads: Mutex<Vec<std::thread::JoinHandle<()>>>,
     started: AtomicBool,
-    /// Runtime handle entered by pool threads at startup; see [`Self::set_handle`].
-    handle: Mutex<Option<Handle>>,
 }
 
 thread_local! {
@@ -186,13 +184,6 @@ pub fn yield_blocking() {
     });
 }
 
-/// Whether the calling thread is one of the simulator's blocking-pool threads, i.e.
-/// whether [`yield_blocking`] may be called. Lets shared sync/blocking code choose
-/// between quantum yields (pool threads) and its regular blocking behavior.
-pub fn is_blocking_pool_thread() -> bool {
-    POOL_THREAD.with(|p| p.borrow().is_some())
-}
-
 impl BlockingPool {
     pub fn new(rand: GlobalRng) -> Self {
         // The pool must be large enough that tasks parked at yield points (waiting for
@@ -205,7 +196,7 @@ impl BlockingPool {
                 v.parse::<u32>()
                     .expect("MSIM_BLOCKING_THREADS must be a positive integer")
             })
-            .unwrap_or(128);
+            .unwrap_or(32);
         assert!(num_threads > 0, "MSIM_BLOCKING_THREADS must be >= 1");
 
         let (sender, queue) = mpsc::channel();
@@ -219,36 +210,28 @@ impl BlockingPool {
             }),
             threads: Mutex::new(Vec::new()),
             started: AtomicBool::new(false),
-            handle: Mutex::new(None),
         }
     }
 
-    /// Store the runtime handle that pool threads enter on startup. Called once during
-    /// runtime construction. (The handle contains this pool via TaskHandle, creating an
-    /// Arc cycle; `shutdown` clears it so the cycle only lives until runtime drop.)
-    pub fn set_handle(&self, handle: Handle) {
-        *self.handle.lock().unwrap() = Some(handle);
-    }
-
-    /// Enqueue a blocking job, lazily spawning the pool threads on first use.
+    /// Enqueue a blocking job. Pool threads are spawned lazily on the first wake round
+    /// that observes queued work (see [`Self::ensure_started`]).
     pub fn spawn(&self, f: BlockingFn, info: Arc<TaskInfo>) {
-        self.ensure_started();
         self.shared
             .sender
             .send((f, info))
             .unwrap_or_else(|_| panic!("blocking pool queue is closed"));
     }
 
+    /// Spawn the pool threads. Called from [`Self::wake_round`] on the main executor
+    /// thread, where the runtime `Handle` is in context; each pool thread enters a
+    /// clone of it so blocking code sees sim time, rand and tasks. Reading the handle
+    /// from context here (rather than storing it) avoids an Arc cycle between the pool
+    /// and the runtime.
     fn ensure_started(&self) {
         if self.started.swap(true, Ordering::Relaxed) {
             return;
         }
-        let handle = self
-            .handle
-            .lock()
-            .unwrap()
-            .clone()
-            .expect("blocking pool used before runtime construction completed");
+        let handle = crate::context::current(|h| h.clone());
         let mut threads = self.threads.lock().unwrap();
         for i in 0..self.shared.num_threads {
             let shared = self.shared.clone();
@@ -266,11 +249,16 @@ impl BlockingPool {
     /// executor loop between polling rounds; returns progress stats.
     pub fn wake_round(&self, rand: &GlobalRng, time: &TimeRuntime) -> RoundStats {
         if !self.started.load(Ordering::Relaxed) {
-            return RoundStats {
-                dequeued: 0,
-                pending: false,
-                panics: Vec::new(),
-            };
+            if self.shared.queue.is_empty() {
+                return RoundStats {
+                    dequeued: 0,
+                    pending: false,
+                    panics: Vec::new(),
+                };
+            }
+            // First queued job: spawn the pool threads now, while we hold the runtime
+            // context on the main thread.
+            self.ensure_started();
         }
 
         // Select candidate threads for this round under a single lock: threads with a
@@ -372,8 +360,6 @@ impl BlockingPool {
 
     /// Shut down the pool: unwind parked tasks and join all threads.
     pub fn shutdown(&self) {
-        // break the Arc cycle described in set_handle.
-        self.handle.lock().unwrap().take();
         let threads = std::mem::take(&mut *self.threads.lock().unwrap());
         if threads.is_empty() {
             return;
@@ -421,17 +407,8 @@ fn run_blocking_thread(me: u32, shared: Arc<PoolShared>, handle: Handle) {
     // Install the sim environment for the lifetime of the thread, so that blocking code
     // (and Drop impls run during unwinds) can use sim time, rand and task context.
     let _ctx = crate::context::enter(handle);
-    crate::sim::intercept::enable_intercepts_quiet(true);
-    // TLS destructors run after the context guard is dropped; an intercepted call there
-    // (with intercepts enabled but no context) panics inside an extern "C" fn, which
-    // cannot unwind and aborts the process. Route such calls back to the real libc.
-    struct DisableInterceptsOnExit;
-    impl Drop for DisableInterceptsOnExit {
-        fn drop(&mut self) {
-            crate::sim::intercept::enable_intercepts_quiet(false);
-        }
-    }
-    let _disable_intercepts = DisableInterceptsOnExit;
+    // Enabled for the thread body; disabled again before TLS teardown (see the guard).
+    let _intercepts = crate::sim::intercept::enable_intercepts_scoped();
     crate::time::ensure_clocks();
     POOL_THREAD.with(|p| *p.borrow_mut() = Some((me, shared.clone())));
 

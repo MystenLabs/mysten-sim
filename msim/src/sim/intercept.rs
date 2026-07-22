@@ -33,6 +33,26 @@ pub(crate) fn intercepts_enabled() -> bool {
     INTERCEPTS_ENABLED.with(|e| e.get())
 }
 
+/// Enable intercepts (quietly) on the current thread for the lifetime of the returned
+/// guard, disabling them again on drop.
+///
+/// Used by blocking-pool threads: their TLS destructors run at thread teardown, after
+/// any runtime-context guard has been dropped. An intercepted syscall there (intercepts
+/// enabled but no context) panics inside an `extern "C"` fn, which cannot unwind and
+/// aborts the process. Disabling on drop routes those late calls back to the real libc.
+pub(crate) fn enable_intercepts_scoped() -> InterceptsGuard {
+    enable_intercepts_quiet(true);
+    InterceptsGuard(())
+}
+
+pub(crate) struct InterceptsGuard(());
+
+impl Drop for InterceptsGuard {
+    fn drop(&mut self) {
+        enable_intercepts_quiet(false);
+    }
+}
+
 /// Cache and call a library function via dlsym()
 #[macro_export]
 macro_rules! define_sys_interceptor {

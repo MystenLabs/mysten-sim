@@ -40,8 +40,8 @@ pub mod join_set;
 pub use join_set::JoinSet;
 
 pub(crate) mod blocking;
+pub use blocking::yield_blocking;
 use blocking::BlockingPool;
-pub use blocking::{is_blocking_pool_thread, yield_blocking};
 
 pub(crate) struct Executor {
     queue: mpsc::Receiver<(Runnable, Arc<TaskInfo>)>,
@@ -239,7 +239,11 @@ impl Executor {
 
             // kill_current_node() panics from blocking tasks are handed back by the
             // pool (their result-channel wrapper is on the killed node and cannot
-            // deliver them); schedule the requested restarts.
+            // deliver them); schedule the requested restarts. Each entry is an
+            // independent per-node restart: a task's kill targets its own node, and two
+            // tasks of the same node cannot both reach this in one round (turns run one
+            // at a time, so the second is dropped by run_one's is_killed() check once
+            // the first kill lands), so handling every entry is correct.
             for (node_id, err) in stats.panics {
                 self.handle_task_panic(node_id, err);
             }
@@ -409,10 +413,6 @@ struct Node {
 }
 
 impl TaskHandle {
-    pub fn blocking_pool(&self) -> &Arc<BlockingPool> {
-        &self.blocking
-    }
-
     /// Kill all tasks of the node.
     pub fn kill(&self, id: NodeId) {
         TimeHandle::current().disable_node_and_cancel_timers(id);
