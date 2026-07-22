@@ -416,7 +416,16 @@ define_sys_interceptor!(
         if tp.is_null() {
             return 0;
         }
-        let time = TimeHandle::current();
+        // A panic here cannot unwind (extern "C") and aborts the process, so fall back
+        // to the real clock when called on a thread with intercepts enabled but no
+        // runtime context (e.g. during thread teardown).
+        let time = match TimeHandle::try_current() {
+            Some(t) => t,
+            None => {
+                trace!("gettimeofday called outside of Runtime");
+                return bypass_gettimeofday(tp, tz);
+            }
+        };
         let dur = time
             .now_time()
             .duration_since(std::time::SystemTime::UNIX_EPOCH)

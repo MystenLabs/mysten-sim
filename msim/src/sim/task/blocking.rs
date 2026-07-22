@@ -379,6 +379,16 @@ fn run_blocking_thread(me: u32, shared: Arc<PoolShared>, handle: Handle) {
     // (and Drop impls run during unwinds) can use sim time, rand and task context.
     let _ctx = crate::context::enter(handle);
     crate::sim::intercept::enable_intercepts(true);
+    // TLS destructors run after the context guard is dropped; an intercepted call there
+    // (with intercepts enabled but no context) panics inside an extern "C" fn, which
+    // cannot unwind and aborts the process. Route such calls back to the real libc.
+    struct DisableInterceptsOnExit;
+    impl Drop for DisableInterceptsOnExit {
+        fn drop(&mut self) {
+            crate::sim::intercept::enable_intercepts(false);
+        }
+    }
+    let _disable_intercepts = DisableInterceptsOnExit;
     crate::time::ensure_clocks();
     POOL_THREAD.with(|p| *p.borrow_mut() = Some((me, shared.clone())));
 
