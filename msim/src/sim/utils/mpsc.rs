@@ -89,6 +89,11 @@ impl<T> Receiver<T> {
         self.inner.queue.lock().unwrap().is_empty()
     }
 
+    /// Returns the number of queued elements.
+    pub fn len(&self) -> usize {
+        self.inner.queue.lock().unwrap().len()
+    }
+
     pub fn clear_inner(&self) {
         let mut old = Vec::new();
         {

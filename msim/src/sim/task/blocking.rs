@@ -62,7 +62,11 @@ struct QuantumState {
 
 struct ThreadQuantum {
     state: Mutex<QuantumState>,
-    cv: Condvar,
+    /// Per-thread condvars (all used with `state`): waking exactly the thread whose
+    /// turn it is avoids a thundering herd across the whole (large) pool.
+    thread_cvs: Vec<Condvar>,
+    /// Woken by `end_turn` for the main thread's wait in `wake_round`.
+    main_cv: Condvar,
 }
 
 impl ThreadQuantum {
@@ -75,7 +79,8 @@ impl ThreadQuantum {
                 dequeued: 0,
                 pending_panics: Vec::new(),
             }),
-            cv: Condvar::new(),
+            thread_cvs: (0..num_threads).map(|_| Condvar::new()).collect(),
+            main_cv: Condvar::new(),
         }
     }
 
@@ -88,7 +93,7 @@ impl ThreadQuantum {
                 Turn::Shutdown => return TurnKind::Exit,
                 Turn::Run(i) if i == me => return TurnKind::Run,
                 Turn::Abort(i) if i == me => return TurnKind::Abort,
-                _ => s = self.cv.wait(s).unwrap(),
+                _ => s = self.thread_cvs[me as usize].wait(s).unwrap(),
             }
         }
     }
@@ -98,7 +103,7 @@ impl ThreadQuantum {
         let mut s = self.state.lock().unwrap();
         if s.turn != Turn::Shutdown {
             s.turn = Turn::Idle;
-            self.cv.notify_all();
+            self.main_cv.notify_one();
         }
     }
 
@@ -261,30 +266,44 @@ impl BlockingPool {
             };
         }
 
-        // fast path: nothing to run, resume or abort. (Skipping the shuffle draw is
-        // deterministic, since the pool state itself is deterministic.)
+        // Select candidate threads for this round under a single lock: threads with a
+        // pending abort or a parked (unpaused) task, plus enough idle threads to drain
+        // the current queue (one task per turn; tasks enqueued during the round are
+        // picked up next round). This keeps rounds O(candidates), not O(pool size).
+        // (Skipping the shuffle draw when there are no candidates is deterministic,
+        // since the pool state itself is deterministic.)
+        let mut order: Vec<u32>;
         {
             let mut s = self.shared.quantum.state.lock().unwrap();
-            if s.current.iter().all(|c| c.is_none())
-                && !s.abort_requested.iter().any(|&a| a)
-                && self.shared.queue.is_empty()
-            {
+            let mut idle_budget = self.shared.queue.len();
+            order = (0..self.shared.num_threads)
+                .filter(|&i| {
+                    if s.abort_requested[i as usize] {
+                        true
+                    } else if let Some(info) = &s.current[i as usize] {
+                        !info.paused.load(Ordering::SeqCst)
+                    } else if idle_budget > 0 {
+                        idle_budget -= 1;
+                        true
+                    } else {
+                        false
+                    }
+                })
+                .collect();
+            if order.is_empty() {
                 return RoundStats {
                     dequeued: 0,
-                    pending: false,
+                    pending: s.current.iter().any(|c| c.is_some()) || !self.shared.queue.is_empty(),
                     panics: std::mem::take(&mut s.pending_panics),
                 };
             }
+            s.dequeued = 0;
         }
-
-        let mut order: Vec<u32> = (0..self.shared.num_threads).collect();
         rand.with(|rng| order.shuffle(rng));
 
         // Suppress panic-hook output for the controlled unwinds that can occur on pool
         // threads during this round. Installed lazily, only if a turn is granted.
         let mut hook_guard: Option<Arc<super::PanicHookGuard>> = None;
-
-        self.shared.quantum.state.lock().unwrap().dequeued = 0;
 
         for i in order {
             let mut s = self.shared.quantum.state.lock().unwrap();
@@ -309,11 +328,11 @@ impl BlockingPool {
 
             trace!("granting turn {:?} to blocking thread {}", turn, i);
             s.turn = turn;
-            self.shared.quantum.cv.notify_all();
+            self.shared.quantum.thread_cvs[i as usize].notify_one();
             let _s = self
                 .shared
                 .quantum
-                .cv
+                .main_cv
                 .wait_while(s, |s| s.turn != Turn::Idle)
                 .unwrap();
             drop(_s);
@@ -364,7 +383,10 @@ impl BlockingPool {
         {
             let mut s = self.shared.quantum.state.lock().unwrap();
             s.turn = Turn::Shutdown;
-            self.shared.quantum.cv.notify_all();
+            for cv in &self.shared.quantum.thread_cvs {
+                cv.notify_one();
+            }
+            drop(s);
         }
         for t in threads {
             t.join().expect("blocking pool thread panicked");
