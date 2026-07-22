@@ -145,6 +145,8 @@ pub(crate) struct BlockingPool {
     shared: Arc<PoolShared>,
     threads: Mutex<Vec<std::thread::JoinHandle<()>>>,
     started: AtomicBool,
+    /// Runtime handle entered by pool threads at startup; see [`Self::set_handle`].
+    handle: Mutex<Option<Handle>>,
 }
 
 thread_local! {
@@ -194,22 +196,36 @@ impl BlockingPool {
             }),
             threads: Mutex::new(Vec::new()),
             started: AtomicBool::new(false),
+            handle: Mutex::new(None),
         }
     }
 
+    /// Store the runtime handle that pool threads enter on startup. Called once during
+    /// runtime construction. (The handle contains this pool via TaskHandle, creating an
+    /// Arc cycle; `shutdown` clears it so the cycle only lives until runtime drop.)
+    pub fn set_handle(&self, handle: Handle) {
+        *self.handle.lock().unwrap() = Some(handle);
+    }
+
     /// Enqueue a blocking job, lazily spawning the pool threads on first use.
-    pub fn spawn(&self, f: BlockingFn, info: Arc<TaskInfo>, handle: &Handle) {
-        self.ensure_started(handle);
+    pub fn spawn(&self, f: BlockingFn, info: Arc<TaskInfo>) {
+        self.ensure_started();
         self.shared
             .sender
             .send((f, info))
             .unwrap_or_else(|_| panic!("blocking pool queue is closed"));
     }
 
-    fn ensure_started(&self, handle: &Handle) {
+    fn ensure_started(&self) {
         if self.started.swap(true, Ordering::Relaxed) {
             return;
         }
+        let handle = self
+            .handle
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("blocking pool used before runtime construction completed");
         let mut threads = self.threads.lock().unwrap();
         for i in 0..self.shared.num_threads {
             let shared = self.shared.clone();
@@ -301,12 +317,21 @@ impl BlockingPool {
 
     /// Shut down the pool: unwind parked tasks and join all threads.
     pub fn shutdown(&self) {
+        // break the Arc cycle described in set_handle.
+        self.handle.lock().unwrap().take();
         let threads = std::mem::take(&mut *self.threads.lock().unwrap());
         if threads.is_empty() {
             return;
         }
         // Suppress panic-hook output for the AbortBlockingTask unwinds of parked tasks.
-        let _hook_guard = install_pool_panic_hook();
+        // The hook cannot be touched if we are already unwinding (e.g. the runtime is
+        // dropped by a failing test) - std forbids modifying it from a panicking
+        // thread; the parked tasks then unwind with default-hook noise, which is fine.
+        let _hook_guard = if std::thread::panicking() {
+            None
+        } else {
+            Some(install_pool_panic_hook())
+        };
         {
             let mut s = self.shared.quantum.state.lock().unwrap();
             s.turn = Turn::Shutdown;

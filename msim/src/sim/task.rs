@@ -220,6 +220,15 @@ impl Executor {
         let waker = futures::task::noop_waker();
         let mut cx = Context::from_waker(&waker);
 
+        // Number of consecutive rounds in which parked blocking tasks were the only
+        // remaining activity and produced no observable progress. A parked task may
+        // make progress purely by being re-woken (e.g. code that yields N times), so we
+        // cannot declare deadlock after one quiet round; a task genuinely waiting for a
+        // condition nothing can set will stall indefinitely, which we detect after a
+        // generous bound.
+        let mut stalled_rounds: usize = 0;
+        const MAX_STALLED_ROUNDS: usize = 10_000;
+
         loop {
             self.run_all_ready();
             if let Poll::Ready(val) = Pin::new(&mut task).poll(&mut cx) {
@@ -233,15 +242,23 @@ impl Executor {
             // progress in itself; time must not advance in that case, because a
             // blocking task waiting at a yield point may be unblocked by the new work.
             let progress = stats.dequeued > 0 || !self.queue.is_empty();
-            if !progress {
+            if progress {
+                stalled_rounds = 0;
+            } else {
                 let going = self.time.advance_to_next_event();
-                if !going && stats.pending {
-                    panic!(
-                        "deadlock: blocking tasks are parked but there are no events \
-                         that could unblock them"
+                if going {
+                    stalled_rounds = 0;
+                } else if stats.pending {
+                    stalled_rounds += 1;
+                    assert!(
+                        stalled_rounds < MAX_STALLED_ROUNDS,
+                        "deadlock: blocking tasks are parked, and made no progress in \
+                         {} wake rounds with no other events",
+                        MAX_STALLED_ROUNDS,
                     );
+                } else {
+                    panic!("no events, the task will block forever");
                 }
-                assert!(going, "no events, the task will block forever");
             }
             if let Some(limit) = self.time_limit {
                 assert!(
@@ -378,6 +395,10 @@ struct Node {
 }
 
 impl TaskHandle {
+    pub fn blocking_pool(&self) -> &Arc<BlockingPool> {
+        &self.blocking
+    }
+
     /// Kill all tasks of the node.
     pub fn kill(&self, id: NodeId) {
         TimeHandle::current().disable_node_and_cancel_timers(id);
@@ -404,6 +425,7 @@ impl TaskHandle {
             init(&TaskNodeHandle {
                 sender: self.sender.clone(),
                 info: node.info.clone(),
+                blocking: self.blocking.clone(),
             });
         }
     }
@@ -439,6 +461,7 @@ impl TaskHandle {
         let handle = TaskNodeHandle {
             sender: self.sender.clone(),
             info: info.clone(),
+            blocking: self.blocking.clone(),
         };
         if let Some(init) = &init {
             init(&handle);
@@ -465,6 +488,7 @@ impl TaskHandle {
         Some(TaskNodeHandle {
             sender: self.sender.clone(),
             info,
+            blocking: self.blocking.clone(),
         })
     }
 }
@@ -473,6 +497,7 @@ impl TaskHandle {
 pub(crate) struct TaskNodeHandle {
     sender: mpsc::Sender<(Runnable, Arc<TaskInfo>)>,
     info: Arc<TaskInfo>,
+    blocking: Arc<BlockingPool>,
 }
 
 assert_send_sync!(TaskNodeHandle);
@@ -484,8 +509,13 @@ impl TaskNodeHandle {
 
     pub fn try_current() -> Option<Self> {
         let info = crate::context::try_current_task()?;
-        let sender = crate::context::try_current(|h| h.task.sender.clone())?;
-        Some(TaskNodeHandle { sender, info })
+        let (sender, blocking) =
+            crate::context::try_current(|h| (h.task.sender.clone(), h.task.blocking.clone()))?;
+        Some(TaskNodeHandle {
+            sender,
+            info,
+            blocking,
+        })
     }
 
     pub(crate) fn id(&self) -> NodeId {
@@ -557,7 +587,6 @@ impl TaskNodeHandle {
         F: FnOnce() -> R + Send + 'static,
         R: Send + 'static,
     {
-        let handle = crate::context::current(|h| h.clone());
         let (tx, rx) = oneshot::channel();
         let job: blocking::BlockingFn = Box::new(move || {
             match std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)) {
@@ -577,7 +606,7 @@ impl TaskNodeHandle {
                 }
             }
         });
-        handle.task.blocking.spawn(job, self.info.clone(), &handle);
+        self.blocking.spawn(job, self.info.clone());
         self.spawn(async move {
             match rx.await {
                 Ok(Ok(v)) => v,
@@ -1073,6 +1102,193 @@ mod tests {
             join_set.detach_all();
             time::sleep(Duration::from_secs(5)).await;
             assert_eq!(flag.load(Ordering::Relaxed), true);
+        });
+    }
+
+    #[test]
+    fn spawn_blocking_basic() {
+        let runtime = Runtime::new();
+        runtime.block_on(async {
+            let v = spawn_blocking(|| 40 + 2).await.unwrap();
+            assert_eq!(v, 42);
+        });
+    }
+
+    #[test]
+    fn spawn_blocking_yield_wait() {
+        let runtime = Runtime::new();
+        runtime.block_on(async {
+            let flag = Arc::new(AtomicBool::new(false));
+
+            let flag1 = flag.clone();
+            let blocking = spawn_blocking(move || {
+                while !flag1.load(Ordering::SeqCst) {
+                    yield_blocking();
+                }
+                123
+            });
+
+            // before the blocking pool existed, the blocking task would run inline and
+            // spin forever, as this timer could never fire.
+            let flag2 = flag.clone();
+            spawn(async move {
+                time::sleep(Duration::from_secs(1)).await;
+                flag2.store(true, Ordering::SeqCst);
+            });
+
+            assert_eq!(blocking.await.unwrap(), 123);
+        });
+    }
+
+    #[test]
+    fn spawn_blocking_cross_task_wait() {
+        // two blocking tasks that wait on each other's progress via yield points.
+        let runtime = Runtime::new();
+        runtime.block_on(async {
+            let flag = Arc::new(AtomicBool::new(false));
+
+            let flag1 = flag.clone();
+            let waiter = spawn_blocking(move || {
+                while !flag1.load(Ordering::SeqCst) {
+                    yield_blocking();
+                }
+            });
+
+            let flag2 = flag.clone();
+            let setter = spawn_blocking(move || {
+                // yield a few times before setting the flag, so the waiter parks.
+                for _ in 0..3 {
+                    yield_blocking();
+                }
+                flag2.store(true, Ordering::SeqCst);
+            });
+
+            setter.await.unwrap();
+            waiter.await.unwrap();
+        });
+    }
+
+    #[test]
+    fn spawn_blocking_nested() {
+        let runtime = Runtime::new();
+        runtime.block_on(async {
+            let v = spawn_blocking(|| {
+                let inner = spawn_blocking(|| 7);
+                // wait for the inner task from the pool thread via yield points.
+                while !inner.is_finished() {
+                    yield_blocking();
+                }
+                8
+            })
+            .await
+            .unwrap();
+            assert_eq!(v, 8);
+        });
+    }
+
+    #[test]
+    fn spawn_blocking_deterministic_order() {
+        let run = |seed: u64| {
+            let runtime = Runtime::with_seed(seed);
+            runtime.block_on(async {
+                let order = Arc::new(Mutex::new(Vec::new()));
+                let mut handles = Vec::new();
+                for i in 0..10 {
+                    let order = order.clone();
+                    handles.push(spawn_blocking(move || {
+                        order.lock().unwrap().push(i);
+                        yield_blocking();
+                        order.lock().unwrap().push(i + 100);
+                    }));
+                }
+                for h in handles {
+                    h.await.unwrap();
+                }
+                let order = order.lock().unwrap().clone();
+                order
+            })
+        };
+        let a = run(42);
+        let b = run(42);
+        assert_eq!(a, b);
+        assert_eq!(a.len(), 20);
+    }
+
+    #[test]
+    #[should_panic(expected = "boom in blocking task")]
+    fn spawn_blocking_panic_propagates() {
+        let runtime = Runtime::new();
+        runtime.block_on(async {
+            let _ = spawn_blocking(|| panic!("boom in blocking task")).await;
+        });
+    }
+
+    struct SetOnDrop(Arc<AtomicBool>);
+    impl Drop for SetOnDrop {
+        fn drop(&mut self) {
+            self.0.store(true, Ordering::SeqCst);
+        }
+    }
+
+    #[test]
+    fn spawn_blocking_kill_unwinds_parked_task() {
+        let runtime = Runtime::new();
+        let node = runtime.create_node().build();
+        let dropped = Arc::new(AtomicBool::new(false));
+
+        let dropped1 = dropped.clone();
+        let handle = node.spawn_blocking(move || {
+            let _guard = SetOnDrop(dropped1);
+            loop {
+                yield_blocking();
+            }
+        });
+
+        runtime.block_on(async move {
+            time::sleep(Duration::from_secs(1)).await;
+            assert!(!dropped.load(Ordering::SeqCst));
+            Handle::current().kill(node.id());
+            // the abort is delivered at the next wake round; the task unwinds,
+            // running its Drop impls on the pool thread.
+            time::sleep(Duration::from_secs(1)).await;
+            assert!(dropped.load(Ordering::SeqCst));
+            assert!(handle.await.is_err());
+        });
+    }
+
+    #[test]
+    fn spawn_blocking_shutdown_unwinds_parked_task() {
+        let runtime = Runtime::new();
+        let dropped = Arc::new(AtomicBool::new(false));
+
+        let dropped1 = dropped.clone();
+        runtime.block_on(async {
+            spawn_blocking(move || {
+                let _guard = SetOnDrop(dropped1);
+                loop {
+                    yield_blocking();
+                }
+            });
+            // return with the blocking task still parked.
+            time::sleep(Duration::from_secs(1)).await;
+        });
+
+        assert!(!dropped.load(Ordering::SeqCst));
+        drop(runtime);
+        assert!(dropped.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    #[should_panic(expected = "deadlock")]
+    fn spawn_blocking_deadlock_detected() {
+        let runtime = Runtime::new();
+        runtime.block_on(async {
+            // parked forever, and no timers exist that could unblock it.
+            spawn_blocking(|| loop {
+                yield_blocking();
+            })
+            .await
+            .unwrap();
         });
     }
 }

@@ -65,8 +65,9 @@ impl Handle {
         thread_local! {
             static LOG_ONCE: () = {
                 warn!(
-                    "spawn_blocking() call in simulator may cause deadlocks if spawned task \
-                    attempts to do I/O"
+                    "spawn_blocking() task in simulator will deadlock if it blocks the \
+                    OS thread waiting for sim progress (e.g. on a channel or mutex); \
+                    such waits must use msim::task::yield_blocking()-based primitives"
                 );
             };
         }
