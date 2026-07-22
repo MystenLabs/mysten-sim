@@ -249,6 +249,21 @@ impl BlockingPool {
             };
         }
 
+        // fast path: nothing to run, resume or abort. (Skipping the shuffle draw is
+        // deterministic, since the pool state itself is deterministic.)
+        {
+            let s = self.shared.quantum.state.lock().unwrap();
+            if s.current.iter().all(|c| c.is_none())
+                && !s.abort_requested.iter().any(|&a| a)
+                && self.shared.queue.is_empty()
+            {
+                return RoundStats {
+                    dequeued: 0,
+                    pending: false,
+                };
+            }
+        }
+
         let mut order: Vec<u32> = (0..self.shared.num_threads).collect();
         rand.with(|rng| order.shuffle(rng));
 
