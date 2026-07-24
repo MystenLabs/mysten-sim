@@ -39,6 +39,87 @@ pub use tokio::{select, sync::watch};
 pub mod join_set;
 pub use join_set::JoinSet;
 
+// # Blocking-pool design sketch
+//
+// The simulator gains limited multi-threading: the runtime spawns a fixed number of
+// extra "blocking pool" threads for code that can yield execution to other threads.
+// Normally no code needs to yield - we poll() ready futures one at a time and they
+// always make progress immediately, because there is no other thread that could be
+// holding a lock they require. `spawn_blocking()` closures, however, run on real OS
+// threads and may block; a `ThreadQuantum` serializes everything so that at most one
+// thread runs at a time, and the threads are woken in a deterministic order.
+//
+// `spawn_blocking()` sends tasks to a blocking_queue. The run loop enforces that only
+// one thing happens at a time, and wakes the blocking threads in deterministic order:
+//
+//     // main run loop
+//     pub fn block_on<F: Future>(&self, future: F) -> F::Output {
+//         let mut task = self.spawn_on_main_task(future);
+//         let waker = futures::task::noop_waker();
+//         let mut cx = Context::from_waker(&waker);
+//         loop {
+//             self.run_all_ready();
+//             if let Poll::Ready(val) = Pin::new(&mut task).poll(&mut cx) {
+//                 return val;
+//             }
+//             self.quantum.wake_all();
+//             let going = self.time.advance_to_next_event();
+//             assert!(going, "no events, the task will block forever");
+//         }
+//     }
+//
+//     // blocking pool thread loop (a fixed number are created at startup)
+//     run_blocking_thread(thread_id: u32) {
+//         self.quantum.start(thread_id);
+//         loop {
+//             // Blocking threads yield before starting each task; tasks themselves can
+//             // also explicitly yield, generally while waiting on a notification. Rather
+//             // than mocking every tokio channel, a special-purpose one calls:
+//             //   #[cfg(msim)] ThreadQuantum::with(|q| q.yield());
+//             self.quantum.yield();
+//             if let Ok(callable) = self.blocking_queue.recv_random(&self.rand) {
+//                 callable();
+//             }
+//         }
+//     }
+//
+//     struct ThreadQuantum {
+//         max_thread: u32,
+//         active_thread: Mutex<Option<u32>>,
+//         cv: CondVar,
+//     }
+//
+//     impl ThreadQuantum {
+//         // a single static ThreadQuantum lets threads call yield() from anywhere
+//         fn with(cb: Fn(&ThreadQuantum));
+//
+//         fn start(&self, thread_id: u32) {
+//             *self.active_thread.lock() = Some(thread_id);
+//         }
+//
+//         fn yield(&self) {
+//             let l = self.active_thread.lock();
+//             let cur_thread = l.expect("current thread should be set");
+//             *l = None;
+//             // wait until we are woken
+//             self.cv.wait_while(l, |active| active != Some(cur_thread));
+//         }
+//
+//         fn wake_all(&self) {
+//             for i in 0..self.max_thread {
+//                 let l = self.active_thread.lock();
+//                 *l = Some(i);
+//                 self.cv.notify_all();                   // only the assigned thread wakes
+//                 self.cv.wait_while(l, |a| a.is_some()); // wait until it calls yield()
+//             }
+//         }
+//     }
+//
+// This is the original design sketch. The implementation refines several details - a
+// `Turn` enum instead of `Option<u32>` so `kill()` can request a deferred abort at a
+// yield point, routing `kill_current_node()` panics/restarts back to the main loop,
+// per-thread condvars, lazy thread startup, and joining the pool on shutdown - but the
+// core idea (one thread runs at a time, woken in deterministic order) is unchanged.
 pub(crate) mod blocking;
 pub use blocking::yield_blocking;
 use blocking::BlockingPool;
