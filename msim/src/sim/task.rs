@@ -463,6 +463,18 @@ impl Executor {
 impl Drop for Executor {
     fn drop(&mut self) {
         self.handle.blocking.shutdown();
+
+        // Runnables parked by `pause()` sit in `Node::paused` until the node map is
+        // dropped. That map is shared with `runtime::Handle`, so it outlives the executor
+        // and is torn down on the main thread after `block_on` has returned and the
+        // context is gone. Dropping a runnable drops its future, whose Drop impls can make
+        // intercepted syscalls (e.g. closing a socket or file); those would reach
+        // `context::current()` with no reactor and panic inside an `extern "C"` fn, which
+        // cannot unwind and aborts the process. Drain the map here with intercepts
+        // disabled so the late syscalls reach the real libc. Same reasoning as
+        // `PoolShared::drop`; the interceptors stay strict everywhere else.
+        let _no_intercepts = crate::sim::intercept::disable_intercepts_scoped();
+        self.handle.nodes.lock().unwrap().clear();
     }
 }
 
