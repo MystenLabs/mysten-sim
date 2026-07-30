@@ -52,10 +52,6 @@ criterion = "0.3"
 structopt = "0.3"
 tokio = { git = "https://github.com/MystenLabs/tokio-msim-fork.git", rev = "e8ce7593bfbfbbd7c7ee8671faecb062a8966b2d", package = "real_tokio", features = ["full"] }
 
-[[bench]]
-name = "rpc"
-harness = false
-
 [package.metadata.docs.rs]
 # all-features = true
 rustc-args = ["--cfg", "msim"]

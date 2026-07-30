@@ -1,5 +1,5 @@
 use std::cell::Cell;
-use tracing::info;
+use tracing::{info, trace};
 
 thread_local! {
     static INTERCEPTS_ENABLED: Cell<bool> = Cell::new(false);
@@ -17,8 +17,40 @@ pub(crate) fn enable_intercepts(e: bool) {
     INTERCEPTS_ENABLED.with(|enabled| enabled.set(e))
 }
 
+// Quiet variant for blocking-pool threads: their startup runs concurrently with the
+// main sim thread, so an info-level log here (with a nondeterministic ThreadId) lands
+// at a racy position in otherwise-deterministic log output.
+pub(crate) fn enable_intercepts_quiet(e: bool) {
+    trace!(
+        "{} library call intercepts on thread {:?}",
+        if e { "enabling" } else { "disabling" },
+        std::thread::current().id()
+    );
+    INTERCEPTS_ENABLED.with(|enabled| enabled.set(e))
+}
+
 pub(crate) fn intercepts_enabled() -> bool {
     INTERCEPTS_ENABLED.with(|e| e.get())
+}
+
+/// Enable intercepts (quietly) on the current thread for the lifetime of the returned
+/// guard, disabling them again on drop.
+///
+/// Used by blocking-pool threads: their TLS destructors run at thread teardown, after
+/// any runtime-context guard has been dropped. An intercepted syscall there (intercepts
+/// enabled but no context) panics inside an `extern "C"` fn, which cannot unwind and
+/// aborts the process. Disabling on drop routes those late calls back to the real libc.
+pub(crate) fn enable_intercepts_scoped() -> InterceptsGuard {
+    enable_intercepts_quiet(true);
+    InterceptsGuard(())
+}
+
+pub(crate) struct InterceptsGuard(());
+
+impl Drop for InterceptsGuard {
+    fn drop(&mut self) {
+        enable_intercepts_quiet(false);
+    }
 }
 
 /// Cache and call a library function via dlsym()

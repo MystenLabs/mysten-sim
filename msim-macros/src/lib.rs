@@ -117,12 +117,6 @@ pub fn test(_args: TokenStream, item: TokenStream) -> TokenStream {
 ///
 ///     By default, the seed is set to the seconds since the Unix epoch.
 ///
-/// - `MSIM_TEST_NUM`: Set the number of tests.
-///
-///     The seed will increase by 1 for each test.
-///
-///     By default, the number is 1.
-///
 /// - `MSIM_TEST_CONFIG`: Set the config file path.
 ///
 ///     By default, tests will use the default configuration.
@@ -133,12 +127,15 @@ pub fn test(_args: TokenStream, item: TokenStream) -> TokenStream {
 ///
 ///     By default, there is no time limit.
 ///
-/// - `MSIM_TEST_CHECK_DETERMINISM`: Enable determinism check.
+/// Retired configuration (test frameworks may keep per-test state in process globals,
+/// which multiple simulations per process would share):
 ///
-///   The test will be run at least twice with the same seed.
-///   If any non-determinism detected, it will panic as soon as possible.
+/// - `MSIM_TEST_NUM` (multiple seeds per process): use an external seed-search runner
+///   that spawns one process per seed instead.
 ///
-///     By default, it is disabled.
+/// - `MSIM_TEST_CHECK_DETERMINISM` and the `check_determinism` attribute (run twice in
+///   one process comparing rand logs): run the test twice in separate processes and
+///   compare log output instead.
 ///
 /// The test can also be provided a configuration by passing an expression with a type that
 /// can be made into() a TestConfig - SimConfig is the basic choice, see TestConfig for more
@@ -223,28 +220,32 @@ fn parse_test(mut input: syn::ItemFn, args: syn::AttributeArgs) -> Result<TokenS
         syn::parse2(quote! { #crate_ident::SimConfig::default() }).expect("parse error")
     });
 
-    let check_determinism = test_config.check_determinism;
-
     let brace_token = input.block.brace_token;
     input.block = syn::parse2(quote_spanned! {last_stmt_end_span=>
         {
+            // Retired: test frameworks may keep per-test state in process globals, so a
+            // process must host at most one simulation. Use an external seed-search
+            // runner instead of MSIM_TEST_NUM, and run the test twice in separate
+            // processes comparing log output instead of MSIM_TEST_CHECK_DETERMINISM.
+            assert!(
+                ::std::env::var("MSIM_TEST_NUM").map_or(true, |v| v == "1"),
+                "MSIM_TEST_NUM is retired: run one process per seed (e.g. seed-search)",
+            );
+            assert!(
+                ::std::env::var("MSIM_TEST_CHECK_DETERMINISM").is_err(),
+                "MSIM_TEST_CHECK_DETERMINISM is retired: run the test twice in separate \
+                 processes and compare log output",
+            );
+
             let mut seed: u64 = if let Ok(seed_str) = ::std::env::var("MSIM_TEST_SEED") {
                 seed_str.parse().expect("MSIM_TEST_SEED should be an integer")
             } else {
                 ::std::time::SystemTime::now().duration_since(::std::time::SystemTime::UNIX_EPOCH).unwrap().as_secs()
             };
-            let mut count: u64 = if let Ok(num_str) = std::env::var("MSIM_TEST_NUM") {
-                num_str.parse().expect("MSIM_TEST_NUM should be an integer")
-            } else {
-                1
-            };
+            let count: u64 = 1;
             let time_limit_s = std::env::var("MSIM_TEST_TIME_LIMIT").ok().map(|num_str| {
                 num_str.parse::<f64>().expect("MSIM_TEST_TIME_LIMIT should be an number")
             });
-            let check = ::std::env::var("MSIM_TEST_CHECK_DETERMINISM").is_ok() || #check_determinism;
-            if check {
-                count = count.max(2);
-            }
 
             let watchdog_timeout = ::std::time::Duration::from_millis(
                 ::std::env::var("MSIM_WATCHDOG_TIMEOUT_MS")
@@ -259,7 +260,6 @@ fn parse_test(mut input: syn::ItemFn, args: syn::AttributeArgs) -> Result<TokenS
                 #crate_ident::rand::GlobalRng::new_with_seed(seed).r#gen::<u64>()
             }
 
-            let mut rand_log = None;
             let mut return_value = None;
             for i in 0..count {
                 let mut inner_seed = seed;
@@ -274,30 +274,14 @@ fn parse_test(mut input: syn::ItemFn, args: syn::AttributeArgs) -> Result<TokenS
                 }).join().expect("config generation thread panicked!");
 
                 let test_config: #crate_ident::TestConfig = config.into();
-                if check {
-                    assert_eq!(
-                        test_config.configs.len(), 1,
-                        "can't check determinism with repeated test"
-                    );
-                }
 
                 for (repeat, sim_config) in test_config.configs.iter() {
                     assert_ne!(*repeat, 0);
-                    if check {
-                        assert_eq!(
-                            *repeat, 1,
-                            "can't check determinism with repeated test"
-                        );
-                    }
 
                     for _j in 0..*repeat {
                         let sim_config = sim_config.clone();
-                        let rand_log0 = rand_log.take();
                         let res = std::thread::spawn(move || {
                             let mut rt = #crate_ident::runtime::Runtime::with_seed_and_config(inner_seed, sim_config);
-                            if check {
-                                rt.enable_determinism_check(rand_log0);
-                            }
                             if let Some(limit) = time_limit_s {
                                 rt.set_time_limit(::std::time::Duration::from_secs_f64(limit));
                             }
@@ -313,13 +297,12 @@ fn parse_test(mut input: syn::ItemFn, args: syn::AttributeArgs) -> Result<TokenS
                             watchdog.join().unwrap();
                             std::mem::drop(rt_read);
 
-                            let log = rt.write().unwrap().take().unwrap().take_rand_log();
-                            (ret, log)
+                            rt.write().unwrap().take();
+                            ret
                         }).join();
                         match res {
-                            Ok((ret, log)) => {
+                            Ok(ret) => {
                                 return_value = Some(ret);
-                                rand_log = log;
                             }
                             Err(e) => {
                                 println!("note: run with `MSIM_TEST_SEED={}` environment variable to reproduce this error", inner_seed);
@@ -330,9 +313,7 @@ fn parse_test(mut input: syn::ItemFn, args: syn::AttributeArgs) -> Result<TokenS
                     }
                 }
 
-                if !check {
-                    seed = next_seed(seed);
-                }
+                seed = next_seed(seed);
             }
             return_value.unwrap()
         }
@@ -352,7 +333,6 @@ struct TestConfig {
     crate_name: Option<String>,
     network_config_expr: Option<syn::Expr>,
     run_in_client_node: bool,
-    check_determinism: bool,
 }
 
 impl TestConfig {
@@ -376,7 +356,6 @@ impl Default for TestConfig {
             crate_name: None,
             network_config_expr: None,
             run_in_client_node: true,
-            check_determinism: false,
         }
     }
 }
@@ -444,7 +423,9 @@ fn build_test_config(args: syn::AttributeArgs) -> Result<TestConfig, syn::Error>
                     .to_lowercase();
                 let msg = match name.as_str() {
                     "check_determinism" => {
-                        config.check_determinism = true;
+                        // Retired: run the test twice in separate processes and compare
+                        // log output instead. Accepted (and ignored) so that existing
+                        // annotations do not break the build.
                         continue;
                     }
                     "threaded_scheduler" | "multi_thread" => {
