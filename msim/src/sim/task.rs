@@ -344,8 +344,13 @@ impl Executor {
                     stalled_rounds += 1;
                     assert!(
                         stalled_rounds < MAX_STALLED_ROUNDS,
-                        "deadlock: blocking tasks are parked, and made no progress in \
-                         {} wake rounds with no other events",
+                        "deadlock: blocking task(s) stayed parked at a yield point for \
+                         {} wake rounds with no other events to advance the simulation. \
+                         A blocking wait on the pool (e.g. `blocking_recv`, or a lock \
+                         acquire that spins with `yield_blocking`) is waiting for \
+                         something that is never produced. Fix the program so the awaited \
+                         value/lock is eventually made available, or so the wait can \
+                         otherwise complete.",
                         MAX_STALLED_ROUNDS,
                     );
                 } else {

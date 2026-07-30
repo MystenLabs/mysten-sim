@@ -359,6 +359,15 @@ impl BlockingPool {
     }
 
     /// Shut down the pool: unwind parked tasks and join all threads.
+    ///
+    /// Parked tasks unwind concurrently here, so the order their drop impls run in is
+    /// not deterministic. This is fine: `shutdown` is only called from `Executor::drop`,
+    /// i.e. after the simulation has already produced its result. A normally-completing
+    /// run has no parked tasks left to unwind (they all ran to completion); tasks are
+    /// only still parked when the runtime is torn down mid-flight (e.g. a failing test),
+    /// and this teardown happens after the observable behavior (rand draws, event order)
+    /// that determinism checks compare - so the non-deterministic drop order cannot
+    /// affect simulation results.
     pub fn shutdown(&self) {
         let threads = std::mem::take(&mut *self.threads.lock().unwrap());
         if threads.is_empty() {
