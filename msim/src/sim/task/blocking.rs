@@ -153,6 +153,21 @@ struct PoolShared {
     num_threads: u32,
 }
 
+impl Drop for PoolShared {
+    fn drop(&mut self) {
+        // Jobs enqueued but never run are dropped here. Their closures can own resources
+        // (e.g. a RocksDB handle) whose `Drop` makes intercepted syscalls like `close`.
+        // PoolShared is dropped from `Executor::drop`, on the main thread, after the
+        // reactor context is gone - so such a syscall would reach `context::current()`
+        // and panic ("no reactor running"), aborting the process. Drain the queue with
+        // intercepts disabled so those late syscalls go to the real libc. We restore the
+        // prior setting afterwards rather than relaxing the interceptors globally: a
+        // context-less intercepted syscall anywhere else is still a bug worth surfacing.
+        let _no_intercepts = crate::sim::intercept::disable_intercepts_scoped();
+        self.queue.clear_inner();
+    }
+}
+
 pub(crate) struct BlockingPool {
     shared: Arc<PoolShared>,
     threads: Mutex<Vec<std::thread::JoinHandle<()>>>,

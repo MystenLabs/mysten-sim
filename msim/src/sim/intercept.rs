@@ -53,6 +53,27 @@ impl Drop for InterceptsGuard {
     }
 }
 
+/// Disable intercepts on the current thread for the lifetime of the returned guard,
+/// restoring the previous setting on drop. The inverse of [`enable_intercepts_scoped`].
+///
+/// This is for narrow teardown windows that must let a specific set of late syscalls
+/// (e.g. from a resource's `Drop`) reach the real libc. It intentionally does not make
+/// the interceptors globally tolerant of a missing reactor - an intercepted syscall with
+/// no simulation context anywhere else is a real bug we want to keep surfacing loudly.
+pub(crate) fn disable_intercepts_scoped() -> InterceptsRestoreGuard {
+    let previous = intercepts_enabled();
+    enable_intercepts_quiet(false);
+    InterceptsRestoreGuard(previous)
+}
+
+pub(crate) struct InterceptsRestoreGuard(bool);
+
+impl Drop for InterceptsRestoreGuard {
+    fn drop(&mut self) {
+        enable_intercepts_quiet(self.0);
+    }
+}
+
 /// Cache and call a library function via dlsym()
 #[macro_export]
 macro_rules! define_sys_interceptor {
