@@ -13,10 +13,9 @@ use std::{
     future::Future,
     io::Write,
     net::IpAddr,
-    sync::{Arc, Mutex, RwLock},
+    sync::{mpsc, Arc, Mutex, RwLock},
     time::Duration,
 };
-use tokio::sync::oneshot;
 
 use tracing::{debug, error, trace, warn};
 
@@ -208,7 +207,7 @@ pub fn start_watchdog(
     rt: Arc<RwLock<Option<Runtime>>>,
     inner_seed: u64,
     timeout: Duration,
-    stop: oneshot::Receiver<()>,
+    stop: mpsc::Receiver<()>,
 ) -> std::thread::JoinHandle<()> {
     start_watchdog_with(rt, timeout, stop, move || {
         error!("deadlock detected, aborting()");
@@ -224,7 +223,7 @@ pub fn start_watchdog(
 fn start_watchdog_with(
     rt: Arc<RwLock<Option<Runtime>>>,
     timeout: Duration,
-    mut stop: oneshot::Receiver<()>,
+    stop: mpsc::Receiver<()>,
     on_deadlock: impl FnOnce() + Send + 'static,
 ) -> std::thread::JoinHandle<()> {
     let limit = 10;
@@ -233,7 +232,7 @@ fn start_watchdog_with(
     std::thread::spawn(move || {
         if std::env::var("MSIM_DISABLE_WATCHDOG").is_ok() {
             warn!("simulator watchdog thread disabled due to MSIM_DISABLE_WATCHDOG");
-            stop.blocking_recv().expect("watchdog stop tx was dropped");
+            let _ = stop.recv();
             return;
         }
 
@@ -244,9 +243,10 @@ fn start_watchdog_with(
         let mut prev_time = rt.handle.time.now_instant();
         let mut deadlock_count = 0;
         loop {
-            std::thread::sleep(step);
-            if stop.try_recv().is_ok() {
-                break;
+            // The test can drop its stop sender while unwinding.
+            match stop.recv_timeout(step) {
+                Ok(()) | Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                Err(mpsc::RecvTimeoutError::Timeout) => {}
             }
 
             let now = rt.handle.time.now_instant();
@@ -567,12 +567,37 @@ pub fn init_logger() {
 mod tests {
     use super::start_watchdog_with;
     use crate::{runtime::Runtime, time};
+    use std::sync::mpsc::channel;
     use std::{
         sync::{Arc, RwLock},
         time::Duration,
     };
-    use tokio::sync::oneshot::channel;
     use tracing::{error, info};
+
+    #[test]
+    fn test_watchdog_stops_promptly() {
+        for signal_stop in [true, false] {
+            let runtime = Arc::new(RwLock::new(Some(Runtime::new())));
+            let (stop_tx, stop_rx) = channel();
+            let watchdog = start_watchdog_with(runtime, Duration::from_secs(600), stop_rx, || {
+                panic!("watchdog fired after stop")
+            });
+            let (done_tx, done_rx) = channel();
+            std::thread::spawn(move || {
+                watchdog.join().unwrap();
+                let _ = done_tx.send(());
+            });
+
+            if signal_stop {
+                stop_tx.send(()).unwrap();
+            } else {
+                drop(stop_tx);
+            }
+            done_rx
+                .recv_timeout(Duration::from_secs(5))
+                .expect("watchdog did not stop before its next polling interval");
+        }
+    }
 
     #[test]
     fn test_watchdog() {
@@ -605,7 +630,7 @@ mod tests {
             });
         });
 
-        deadlock_rx.blocking_recv().expect("cancel_tx dropped");
+        deadlock_rx.recv().expect("cancel_tx dropped");
         info!("deadlock detected successfully");
         // verify that the deadline was reset after we came back after the timer reset
         assert!(now.elapsed() > Duration::from_millis(1500));

@@ -286,7 +286,7 @@ fn parse_test(mut input: syn::ItemFn, args: syn::AttributeArgs) -> Result<TokenS
                                 rt.set_time_limit(::std::time::Duration::from_secs_f64(limit));
                             }
                             let rt = std::sync::Arc::new(std::sync::RwLock::new(Some(rt)));
-                            let (stop_tx, stop_rx) = ::tokio::sync::oneshot::channel();
+                            let (stop_tx, stop_rx) = ::std::sync::mpsc::channel();
                             let watchdog = #crate_ident::runtime::start_watchdog(
                                 rt.clone(), inner_seed, watchdog_timeout, stop_rx
                             );
