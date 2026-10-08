@@ -121,8 +121,8 @@ pub use join_set::JoinSet;
 // per-thread condvars, lazy thread startup, and joining the pool on shutdown - but the
 // core idea (one thread runs at a time, woken in deterministic order) is unchanged.
 pub(crate) mod blocking;
-pub use blocking::yield_blocking;
 use blocking::BlockingPool;
+pub use blocking::{yield_blocking, BlockingLatency};
 
 pub(crate) struct Executor {
     queue: mpsc::Receiver<(Runnable, Arc<TaskInfo>)>,
@@ -223,6 +223,16 @@ fn kill_current_node_impl(handle: runtime::Handle, restart_after: Option<Duratio
     handle.kill(cur_node_id);
     // panic with PanicWrapper so that run_all_ready can intercept it.
     std::panic::panic_any(PanicWrapper { restart_after })
+}
+
+/// Sets the sim time that blocking tasks take, so that a node under load has blocking work
+/// queued and running at any instant, as a real node does. `None` makes blocking tasks take no
+/// sim time. The default is [`BlockingLatency::default`].
+///
+/// A task still queued when its node begins a graceful shutdown is cancelled without running,
+/// as tokio's blocking pool does. A task that has started runs to completion.
+pub fn set_blocking_latency(latency: Option<BlockingLatency>) {
+    TaskNodeHandle::current().blocking.set_latency(latency);
 }
 
 /// Begin a graceful shutdown of the current node, modeling a process that drops its tokio
@@ -840,12 +850,50 @@ impl TaskNodeHandle {
         R: Send + 'static,
     {
         if self.info.is_shutting_down() {
-            // tokio cancels blocking tasks spawned after its blocking pool shut down.
-            return JoinHandle {
-                id: runtime_task::next_task_id(),
-                inner: Arc::new(InnerHandle::new(Mutex::new(None))),
-            };
+            return Self::cancelled_handle();
         }
+        let Some((start_delay, finish_delay)) = self.blocking.sample_latency() else {
+            let result = self.submit_blocking(f);
+            return self.spawn(Self::await_blocking(result));
+        };
+
+        let (abort_tx, abort_rx) = oneshot::channel::<AbortHandle>();
+        let this = self.clone();
+        let handle = self.spawn(async move {
+            crate::time::sleep(start_delay).await;
+            if this.info.is_shutting_down() {
+                // tokio's blocking pool cancels tasks still queued when it shuts down.
+                abort_rx
+                    .await
+                    .expect("abort handle is sent at spawn")
+                    .abort();
+                return std::future::pending().await;
+            }
+            let result = this.submit_blocking(f);
+            let output = Self::await_blocking(result).await;
+            crate::time::sleep(finish_delay).await;
+            output
+        });
+        let _ = abort_tx.send(handle.abort_handle());
+        handle
+    }
+
+    fn cancelled_handle<R>() -> JoinHandle<R> {
+        JoinHandle {
+            id: runtime_task::next_task_id(),
+            inner: Arc::new(InnerHandle::new(Mutex::new(None))),
+        }
+    }
+
+    /// Runs `f` on the blocking pool and returns a receiver for its result.
+    fn submit_blocking<F, R>(
+        &self,
+        f: F,
+    ) -> oneshot::Receiver<Result<R, Box<dyn std::any::Any + Send>>>
+    where
+        F: FnOnce() -> R + Send + 'static,
+        R: Send + 'static,
+    {
         let (tx, rx) = oneshot::channel();
         let job: blocking::BlockingFn = Box::new(move || {
             match std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)) {
@@ -857,26 +905,30 @@ impl TaskNodeHandle {
                         // Propagate to the pool thread loop. An abort unwind is simply
                         // ignored there. A PanicWrapper (kill_current_node) must be
                         // handed to the main loop via the pool: it kills this task's
-                        // own node, so the wrapper task below is dead and cannot
+                        // own node, so the waiting task is dead and cannot
                         // deliver the payload (and the restart would be lost).
                         std::panic::resume_unwind(e);
                     }
-                    // other panics are re-thrown on the main thread by the wrapper
-                    // task below, where run_all_ready's existing handling applies.
+                    // other panics are re-thrown on the main thread by the waiting
+                    // task, where run_all_ready's existing handling applies.
                     let _ = tx.send(Err(e));
                 }
             }
         });
         self.blocking.spawn(job, self.info.clone());
-        self.spawn(async move {
-            match rx.await {
-                Ok(Ok(v)) => v,
-                Ok(Err(payload)) => std::panic::resume_unwind(payload),
-                // the sender is dropped without sending only when the node is killed,
-                // in which case this task is killed as well and never polled again.
-                Err(_) => unreachable!("blocking task aborted but its node is alive"),
-            }
-        })
+        rx
+    }
+
+    async fn await_blocking<R>(
+        rx: oneshot::Receiver<Result<R, Box<dyn std::any::Any + Send>>>,
+    ) -> R {
+        match rx.await {
+            Ok(Ok(v)) => v,
+            Ok(Err(payload)) => std::panic::resume_unwind(payload),
+            // the sender is dropped without sending only when the node is killed,
+            // in which case this task is killed as well and never polled again.
+            Err(_) => unreachable!("blocking task aborted but its node is alive"),
+        }
     }
 
     pub fn enter(&self) -> crate::context::TaskEnterGuard {
@@ -1707,6 +1759,83 @@ mod tests {
             time::sleep(Duration::from_secs(1)).await;
             let n = cancelled.load(Ordering::SeqCst);
             assert!((1..=10).contains(&n), "cancelled {n} times");
+        });
+    }
+
+    fn fixed_latency(start_ms: u64, finish_ms: u64) -> Option<BlockingLatency> {
+        let start = Duration::from_millis(start_ms);
+        let finish = Duration::from_millis(finish_ms);
+        Some(BlockingLatency {
+            start_delay: start..start,
+            finish_delay: finish..finish,
+        })
+    }
+
+    #[test]
+    fn blocking_latency_delays_result() {
+        let runtime = Runtime::new();
+        runtime.block_on(async {
+            set_blocking_latency(fixed_latency(10, 20));
+            let t0 = time::Instant::now();
+            assert_eq!(spawn_blocking(|| 1).await.unwrap(), 1);
+            assert!(t0.elapsed() >= Duration::from_millis(30));
+        });
+    }
+
+    #[test]
+    fn blocking_latency_queued_task_cancelled_by_graceful_shutdown() {
+        let runtime = Runtime::new();
+        let node = runtime.create_node().build();
+
+        let ran = Arc::new(AtomicBool::new(false));
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let ran_ = ran.clone();
+        let cancelled_ = cancelled.clone();
+        node.spawn(async move {
+            let result = spawn_blocking(move || ran_.store(true, Ordering::SeqCst)).await;
+            cancelled_.store(result.unwrap_err().is_cancelled(), Ordering::SeqCst);
+        });
+
+        runtime.block_on(async move {
+            set_blocking_latency(fixed_latency(100, 0));
+            // Let the node spawn the task, which waits 100ms in the queue.
+            time::sleep(Duration::from_millis(50)).await;
+            Handle::current().begin_graceful_shutdown(
+                node.id(),
+                None,
+                1000,
+                Duration::from_secs(1),
+            );
+            time::sleep(Duration::from_secs(2)).await;
+            assert!(!ran.load(Ordering::SeqCst));
+            assert!(cancelled.load(Ordering::SeqCst));
+        });
+    }
+
+    #[test]
+    fn blocking_latency_started_task_completes_during_graceful_shutdown() {
+        let runtime = Runtime::new();
+        let node = runtime.create_node().build();
+
+        let output = Arc::new(AtomicUsize::new(0));
+        let output_ = output.clone();
+        node.spawn(async move {
+            let v = spawn_blocking(|| 7).await.unwrap();
+            output_.store(v, Ordering::SeqCst);
+        });
+
+        runtime.block_on(async move {
+            set_blocking_latency(fixed_latency(0, 100));
+            // The task has started and is running when the shutdown begins.
+            time::sleep(Duration::from_millis(50)).await;
+            Handle::current().begin_graceful_shutdown(
+                node.id(),
+                None,
+                1000,
+                Duration::from_secs(1),
+            );
+            time::sleep(Duration::from_secs(2)).await;
+            assert_eq!(output.load(Ordering::SeqCst), 7);
         });
     }
 

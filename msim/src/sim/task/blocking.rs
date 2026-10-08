@@ -172,6 +172,26 @@ pub(crate) struct BlockingPool {
     shared: Arc<PoolShared>,
     threads: Mutex<Vec<std::thread::JoinHandle<()>>>,
     started: AtomicBool,
+    latency: Mutex<Option<BlockingLatency>>,
+}
+
+/// Sim time that blocking tasks take, sampled uniformly per task. See
+/// [`crate::task::set_blocking_latency`].
+#[derive(Clone, Debug)]
+pub struct BlockingLatency {
+    /// Time a task waits in the queue before it starts.
+    pub start_delay: std::ops::Range<Duration>,
+    /// Time a task runs before its result is delivered.
+    pub finish_delay: std::ops::Range<Duration>,
+}
+
+impl Default for BlockingLatency {
+    fn default() -> Self {
+        Self {
+            start_delay: Duration::ZERO..Duration::from_millis(1),
+            finish_delay: Duration::ZERO..Duration::from_millis(5),
+        }
+    }
 }
 
 thread_local! {
@@ -225,7 +245,25 @@ impl BlockingPool {
             }),
             threads: Mutex::new(Vec::new()),
             started: AtomicBool::new(false),
+            latency: Mutex::new(Some(BlockingLatency::default())),
         }
+    }
+
+    pub fn set_latency(&self, latency: Option<BlockingLatency>) {
+        *self.latency.lock().unwrap() = latency;
+    }
+
+    /// Returns (start delay, finish delay), or None if no latency is configured.
+    pub fn sample_latency(&self) -> Option<(Duration, Duration)> {
+        let latency = self.latency.lock().unwrap().clone()?;
+        let sample = |range: &std::ops::Range<Duration>| {
+            if range.is_empty() {
+                range.start
+            } else {
+                self.shared.rand.with(|rng| rng.gen_range(range.clone()))
+            }
+        };
+        Some((sample(&latency.start_delay), sample(&latency.finish_delay)))
     }
 
     /// Enqueue a blocking job. Pool threads are spawned lazily on the first wake round
