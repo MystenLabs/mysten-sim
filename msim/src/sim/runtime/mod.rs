@@ -316,6 +316,19 @@ impl Handle {
         }
     }
 
+    /// Begin a graceful shutdown of a node. See
+    /// [`crate::task::begin_graceful_shutdown_current_node`].
+    pub fn begin_graceful_shutdown(
+        &self,
+        id: NodeId,
+        restart_after: Option<Duration>,
+        poll_budget: usize,
+        max_duration: Duration,
+    ) {
+        self.task
+            .begin_graceful_shutdown(id, restart_after, poll_budget, max_duration);
+    }
+
     /// Restart a node。
     pub fn restart(&self, id: NodeId) {
         self.task.restart(id);

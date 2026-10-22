@@ -4,7 +4,7 @@ use super::{
     context,
     rand::GlobalRng,
     runtime,
-    time::{TimeHandle, TimeRuntime},
+    time::{Instant, TimeHandle, TimeRuntime},
     utils::mpsc,
 };
 use crate::assert_send_sync;
@@ -20,7 +20,7 @@ use std::{
     panic::{RefUnwindSafe, UnwindSafe},
     pin::Pin,
     sync::{
-        atomic::{AtomicBool, AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
         Arc, Mutex,
     },
     task::{Context, Poll},
@@ -121,8 +121,8 @@ pub use join_set::JoinSet;
 // per-thread condvars, lazy thread startup, and joining the pool on shutdown - but the
 // core idea (one thread runs at a time, woken in deterministic order) is unchanged.
 pub(crate) mod blocking;
-pub use blocking::yield_blocking;
 use blocking::BlockingPool;
+pub use blocking::{yield_blocking, BlockingLatency};
 
 pub(crate) struct Executor {
     queue: mpsc::Receiver<(Runnable, Arc<TaskInfo>)>,
@@ -225,12 +225,57 @@ fn kill_current_node_impl(handle: runtime::Handle, restart_after: Option<Duratio
     std::panic::panic_any(PanicWrapper { restart_after })
 }
 
+/// Sets the sim time that blocking tasks take, so that a node under load has blocking work
+/// queued and running at any instant, as a real node does. `None` makes blocking tasks take no
+/// sim time. The default is [`BlockingLatency::default`].
+///
+/// A task still queued when its node begins a graceful shutdown is cancelled without running,
+/// as tokio's blocking pool does. A task that has started runs to completion.
+pub fn set_blocking_latency(latency: Option<BlockingLatency>) {
+    TaskNodeHandle::current().blocking.set_latency(latency);
+}
+
+/// Begin a graceful shutdown of the current node, modeling a process that drops its tokio
+/// runtime. Unlike `kill_current_node`, this returns, and the caller keeps running.
+///
+/// From now on `spawn_blocking` on this node returns a handle that resolves to a cancelled
+/// `JoinError` without running the closure. The node's tasks keep being polled for
+/// `poll_budget` more polls, or until `max_duration` of sim time has passed, and then the node
+/// is killed. If `restart_after` is set, the node restarts after that delay.
+///
+/// In a multi-thread tokio runtime, the blocking pool refuses new work before a busy worker
+/// notices the shutdown, which it checks every 61 task polls. This window models that. The
+/// window is measured in polls, not time: a loaded node is always busy, while a simulated node
+/// does its work in bursts at discrete instants. `max_duration` only bounds an idle node.
+pub fn begin_graceful_shutdown_current_node(
+    restart_after: Option<Duration>,
+    poll_budget: usize,
+    max_duration: Duration,
+) {
+    let handle = runtime::Handle::current();
+    handle.task.begin_graceful_shutdown(
+        context::current_node(),
+        restart_after,
+        poll_budget,
+        max_duration,
+    );
+}
+
+struct GracefulShutdown {
+    restart_after: Option<Duration>,
+    deadline: Instant,
+}
+
 pub(crate) struct TaskInfo {
     inner: Arc<NodeInfo>,
     /// A flag indicating that the task should be paused.
     paused: AtomicBool,
     /// A flag indicating that the task should no longer be executed.
     killed: watch::Sender<bool>,
+    /// Polls left before a graceful shutdown kills the node. `usize::MAX` means the node is
+    /// not shutting down.
+    shutdown_polls_left: AtomicUsize,
+    shutdown: Mutex<Option<GracefulShutdown>>,
 }
 
 impl TaskInfo {
@@ -244,7 +289,13 @@ impl TaskInfo {
             }),
             paused: AtomicBool::new(false),
             killed: watch::channel(false).0,
+            shutdown_polls_left: AtomicUsize::new(usize::MAX),
+            shutdown: Mutex::new(None),
         }
+    }
+
+    fn is_shutting_down(&self) -> bool {
+        self.shutdown_polls_left.load(Ordering::Relaxed) != usize::MAX
     }
 
     pub fn node(&self) -> NodeId {
@@ -275,6 +326,7 @@ impl Executor {
                 sender,
                 next_node_id: Arc::new(AtomicU64::new(1)),
                 blocking,
+                shutting_down: Default::default(),
             },
             time: TimeRuntime::new(&rand),
             rand,
@@ -434,6 +486,16 @@ impl Executor {
                 let mut nodes = self.nodes.lock().unwrap();
                 nodes.get_mut(&info.node()).unwrap().paused.push(runnable);
                 continue;
+            } else if info.is_shutting_down() {
+                let polls_left = info.shutdown_polls_left.load(Ordering::Relaxed);
+                if polls_left == 0 {
+                    self.finish_graceful_shutdown(&info);
+                    let _guard = crate::context::enter_task(info);
+                    std::mem::drop(runnable);
+                    continue;
+                }
+                info.shutdown_polls_left
+                    .store(polls_left - 1, Ordering::Relaxed);
             }
             // run task
             let node_id = info.node();
@@ -457,6 +519,52 @@ impl Executor {
             let dur = Duration::from_nanos(self.rand.with(|rng| rng.gen_range(50..100)));
             self.time.advance(dur);
         }
+
+        let now = self.time.handle().now_instant();
+        let expired: Vec<_> = self
+            .shutting_down
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|info| {
+                info.shutdown
+                    .lock()
+                    .unwrap()
+                    .as_ref()
+                    .is_some_and(|s| s.deadline <= now)
+            })
+            .cloned()
+            .collect();
+        for info in expired {
+            self.finish_graceful_shutdown(&info);
+        }
+    }
+
+    fn finish_graceful_shutdown(&self, info: &Arc<TaskInfo>) {
+        self.shutting_down
+            .lock()
+            .unwrap()
+            .retain(|i| !Arc::ptr_eq(i, info));
+        let id = info.node();
+        let is_current = self
+            .nodes
+            .lock()
+            .unwrap()
+            .get(&id)
+            .is_some_and(|node| Arc::ptr_eq(&node.info, info));
+        if !is_current {
+            // Already killed or deleted by other means.
+            return;
+        }
+        let restart_after = info
+            .shutdown
+            .lock()
+            .unwrap()
+            .as_ref()
+            .and_then(|s| s.restart_after);
+        info!("graceful shutdown of node {} complete, killing it", id);
+        runtime::Handle::current().kill(id);
+        self.handle_task_panic(id, Box::new(PanicWrapper { restart_after }));
     }
 }
 
@@ -500,6 +608,9 @@ pub(crate) struct TaskHandle {
     nodes: Arc<Mutex<HashMap<NodeId, Node>>>,
     next_node_id: Arc<AtomicU64>,
     blocking: Arc<BlockingPool>,
+    /// Incarnations of nodes in a graceful shutdown. An entry is stale once its node is
+    /// killed by other means, because `kill` replaces the node's `TaskInfo`.
+    shutting_down: Arc<Mutex<Vec<Arc<TaskInfo>>>>,
 }
 assert_send_sync!(TaskHandle);
 
@@ -524,6 +635,45 @@ impl TaskHandle {
 
         // in-flight blocking tasks of this node unwind at their next yield point.
         self.blocking.request_abort_node(id);
+    }
+
+    /// See `begin_graceful_shutdown_current_node`. Has no effect if the node is already
+    /// shutting down.
+    pub fn begin_graceful_shutdown(
+        &self,
+        id: NodeId,
+        restart_after: Option<Duration>,
+        poll_budget: usize,
+        max_duration: Duration,
+    ) {
+        let info = self
+            .nodes
+            .lock()
+            .unwrap()
+            .get(&id)
+            .expect("node not found")
+            .info
+            .clone();
+        if info.is_shutting_down() {
+            return;
+        }
+        info!(
+            "beginning graceful shutdown of node {}, poll budget {}, restart after {:?}",
+            id, poll_budget, restart_after
+        );
+        let time = TimeHandle::current();
+        let deadline = time.now_instant() + max_duration;
+        *info.shutdown.lock().unwrap() = Some(GracefulShutdown {
+            restart_after,
+            deadline,
+        });
+        // Ensures the executor reaches the deadline even if nothing else is scheduled. Node 0
+        // is the main task, which is never killed.
+        time.add_timer_for_node(NodeId::zero(), deadline, || {});
+        // usize::MAX is the "not shutting down" sentinel.
+        info.shutdown_polls_left
+            .store(poll_budget.min(usize::MAX - 1), Ordering::Relaxed);
+        self.shutting_down.lock().unwrap().push(info);
     }
 
     /// Kill all tasks of the node and restart the initial task.
@@ -699,6 +849,51 @@ impl TaskNodeHandle {
         F: FnOnce() -> R + Send + 'static,
         R: Send + 'static,
     {
+        if self.info.is_shutting_down() {
+            return Self::cancelled_handle();
+        }
+        let Some((start_delay, finish_delay)) = self.blocking.sample_latency() else {
+            let result = self.submit_blocking(f);
+            return self.spawn(Self::await_blocking(result));
+        };
+
+        let (abort_tx, abort_rx) = oneshot::channel::<AbortHandle>();
+        let this = self.clone();
+        let handle = self.spawn(async move {
+            crate::time::sleep(start_delay).await;
+            if this.info.is_shutting_down() {
+                // tokio's blocking pool cancels tasks still queued when it shuts down.
+                abort_rx
+                    .await
+                    .expect("abort handle is sent at spawn")
+                    .abort();
+                return std::future::pending().await;
+            }
+            let result = this.submit_blocking(f);
+            let output = Self::await_blocking(result).await;
+            crate::time::sleep(finish_delay).await;
+            output
+        });
+        let _ = abort_tx.send(handle.abort_handle());
+        handle
+    }
+
+    fn cancelled_handle<R>() -> JoinHandle<R> {
+        JoinHandle {
+            id: runtime_task::next_task_id(),
+            inner: Arc::new(InnerHandle::new(Mutex::new(None))),
+        }
+    }
+
+    /// Runs `f` on the blocking pool and returns a receiver for its result.
+    fn submit_blocking<F, R>(
+        &self,
+        f: F,
+    ) -> oneshot::Receiver<Result<R, Box<dyn std::any::Any + Send>>>
+    where
+        F: FnOnce() -> R + Send + 'static,
+        R: Send + 'static,
+    {
         let (tx, rx) = oneshot::channel();
         let job: blocking::BlockingFn = Box::new(move || {
             match std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)) {
@@ -710,26 +905,30 @@ impl TaskNodeHandle {
                         // Propagate to the pool thread loop. An abort unwind is simply
                         // ignored there. A PanicWrapper (kill_current_node) must be
                         // handed to the main loop via the pool: it kills this task's
-                        // own node, so the wrapper task below is dead and cannot
+                        // own node, so the waiting task is dead and cannot
                         // deliver the payload (and the restart would be lost).
                         std::panic::resume_unwind(e);
                     }
-                    // other panics are re-thrown on the main thread by the wrapper
-                    // task below, where run_all_ready's existing handling applies.
+                    // other panics are re-thrown on the main thread by the waiting
+                    // task, where run_all_ready's existing handling applies.
                     let _ = tx.send(Err(e));
                 }
             }
         });
         self.blocking.spawn(job, self.info.clone());
-        self.spawn(async move {
-            match rx.await {
-                Ok(Ok(v)) => v,
-                Ok(Err(payload)) => std::panic::resume_unwind(payload),
-                // the sender is dropped without sending only when the node is killed,
-                // in which case this task is killed as well and never polled again.
-                Err(_) => unreachable!("blocking task aborted but its node is alive"),
-            }
-        })
+        rx
+    }
+
+    async fn await_blocking<R>(
+        rx: oneshot::Receiver<Result<R, Box<dyn std::any::Any + Send>>>,
+    ) -> R {
+        match rx.await {
+            Ok(Ok(v)) => v,
+            Ok(Err(payload)) => std::panic::resume_unwind(payload),
+            // the sender is dropped without sending only when the node is killed,
+            // in which case this task is killed as well and never polled again.
+            Err(_) => unreachable!("blocking task aborted but its node is alive"),
+        }
     }
 
     pub fn enter(&self) -> crate::context::TaskEnterGuard {
@@ -1432,6 +1631,241 @@ mod tests {
 
             time::sleep_until(t0 + Duration::from_secs(8)).await;
             assert_eq!(flag.load(Ordering::SeqCst), 2);
+        });
+    }
+
+    #[test]
+    fn graceful_shutdown_cancels_spawn_blocking() {
+        let runtime = Runtime::new();
+        let node = runtime.create_node().build();
+
+        let closure_ran = Arc::new(AtomicBool::new(false));
+        let after_shutdown = Arc::new(AtomicUsize::new(0));
+
+        let closure_ran_ = closure_ran.clone();
+        let after_shutdown_ = after_shutdown.clone();
+        node.spawn(async move {
+            begin_graceful_shutdown_current_node(None, 10, Duration::from_millis(10));
+            // The caller keeps running after beginning the shutdown.
+            after_shutdown_.fetch_add(1, Ordering::SeqCst);
+            let err = spawn_blocking(move || closure_ran_.store(true, Ordering::SeqCst))
+                .await
+                .unwrap_err();
+            assert!(err.is_cancelled());
+            after_shutdown_.fetch_add(1, Ordering::SeqCst);
+            // The node is killed before this sleep completes.
+            time::sleep(Duration::from_secs(1)).await;
+            after_shutdown_.fetch_add(1, Ordering::SeqCst);
+        });
+
+        runtime.block_on(async move {
+            time::sleep(Duration::from_secs(2)).await;
+            assert_eq!(after_shutdown.load(Ordering::SeqCst), 2);
+            assert!(!closure_ran.load(Ordering::SeqCst));
+        });
+    }
+
+    #[test]
+    fn graceful_shutdown_poll_budget() {
+        let runtime = Runtime::new();
+        let node = runtime.create_node().build();
+
+        let polls = Arc::new(AtomicUsize::new(0));
+        let polls_ = polls.clone();
+        node.spawn(async move {
+            begin_graceful_shutdown_current_node(None, 5, Duration::from_secs(1));
+            loop {
+                polls_.fetch_add(1, Ordering::SeqCst);
+                yield_now().await;
+            }
+        });
+
+        runtime.block_on(async move {
+            time::sleep(Duration::from_secs(1)).await;
+            // The poll that began the shutdown, then 5 budgeted polls.
+            assert_eq!(polls.load(Ordering::SeqCst), 6);
+        });
+    }
+
+    #[test]
+    fn graceful_shutdown_idle_node_restarts() {
+        let runtime = Runtime::new();
+
+        let flag = Arc::new(AtomicUsize::new(0));
+        let flag_ = flag.clone();
+        let node = runtime
+            .create_node()
+            .init(move || {
+                let flag = flag_.clone();
+                async move {
+                    // set flag to 0, then +2 every 2s
+                    flag.store(0, Ordering::SeqCst);
+                    loop {
+                        time::sleep(Duration::from_secs(2)).await;
+                        flag.fetch_add(2, Ordering::SeqCst);
+                    }
+                }
+            })
+            .build();
+
+        runtime.block_on(async move {
+            let t0 = time::Instant::now();
+
+            time::sleep_until(t0 + Duration::from_secs(3)).await;
+            assert_eq!(flag.load(Ordering::SeqCst), 2);
+            // The node has no runnable task, so it is killed at the deadline.
+            Handle::current().begin_graceful_shutdown(
+                node.id(),
+                Some(Duration::from_secs(2)),
+                1000,
+                Duration::from_millis(10),
+            );
+
+            // killed at ~3s; restart timer fires at ~5s, resetting the flag.
+            time::sleep_until(t0 + Duration::from_millis(4500)).await;
+            assert_eq!(flag.load(Ordering::SeqCst), 2);
+            time::sleep_until(t0 + Duration::from_secs(6)).await;
+            assert_eq!(flag.load(Ordering::SeqCst), 0);
+            time::sleep_until(t0 + Duration::from_secs(8)).await;
+            assert_eq!(flag.load(Ordering::SeqCst), 2);
+        });
+    }
+
+    #[test]
+    fn graceful_shutdown_window_spans_idle_time() {
+        let runtime = Runtime::new();
+        let node = runtime.create_node().build();
+
+        let cancelled = Arc::new(AtomicUsize::new(0));
+        let cancelled_ = cancelled.clone();
+        node.spawn(async move {
+            loop {
+                time::sleep(Duration::from_millis(5)).await;
+                if spawn_blocking(|| ()).await.is_err() {
+                    cancelled_.fetch_add(1, Ordering::SeqCst);
+                }
+            }
+        });
+
+        runtime.block_on(async move {
+            time::sleep(Duration::from_millis(12)).await;
+            // The node is idle until its next timer, and is polled when the timer fires.
+            Handle::current().begin_graceful_shutdown(
+                node.id(),
+                None,
+                1000,
+                Duration::from_millis(50),
+            );
+            time::sleep(Duration::from_secs(1)).await;
+            let n = cancelled.load(Ordering::SeqCst);
+            assert!((1..=10).contains(&n), "cancelled {n} times");
+        });
+    }
+
+    fn fixed_latency(start_ms: u64, finish_ms: u64) -> Option<BlockingLatency> {
+        let start = Duration::from_millis(start_ms);
+        let finish = Duration::from_millis(finish_ms);
+        Some(BlockingLatency {
+            start_delay: start..start,
+            finish_delay: finish..finish,
+        })
+    }
+
+    #[test]
+    fn blocking_latency_delays_result() {
+        let runtime = Runtime::new();
+        runtime.block_on(async {
+            set_blocking_latency(fixed_latency(10, 20));
+            let t0 = time::Instant::now();
+            assert_eq!(spawn_blocking(|| 1).await.unwrap(), 1);
+            assert!(t0.elapsed() >= Duration::from_millis(30));
+        });
+    }
+
+    #[test]
+    fn blocking_latency_queued_task_cancelled_by_graceful_shutdown() {
+        let runtime = Runtime::new();
+        let node = runtime.create_node().build();
+
+        let ran = Arc::new(AtomicBool::new(false));
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let ran_ = ran.clone();
+        let cancelled_ = cancelled.clone();
+        node.spawn(async move {
+            let result = spawn_blocking(move || ran_.store(true, Ordering::SeqCst)).await;
+            cancelled_.store(result.unwrap_err().is_cancelled(), Ordering::SeqCst);
+        });
+
+        runtime.block_on(async move {
+            set_blocking_latency(fixed_latency(100, 0));
+            // Let the node spawn the task, which waits 100ms in the queue.
+            time::sleep(Duration::from_millis(50)).await;
+            Handle::current().begin_graceful_shutdown(
+                node.id(),
+                None,
+                1000,
+                Duration::from_secs(1),
+            );
+            time::sleep(Duration::from_secs(2)).await;
+            assert!(!ran.load(Ordering::SeqCst));
+            assert!(cancelled.load(Ordering::SeqCst));
+        });
+    }
+
+    #[test]
+    fn blocking_latency_started_task_completes_during_graceful_shutdown() {
+        let runtime = Runtime::new();
+        let node = runtime.create_node().build();
+
+        let output = Arc::new(AtomicUsize::new(0));
+        let output_ = output.clone();
+        node.spawn(async move {
+            let v = spawn_blocking(|| 7).await.unwrap();
+            output_.store(v, Ordering::SeqCst);
+        });
+
+        runtime.block_on(async move {
+            set_blocking_latency(fixed_latency(0, 100));
+            // The task has started and is running when the shutdown begins.
+            time::sleep(Duration::from_millis(50)).await;
+            Handle::current().begin_graceful_shutdown(
+                node.id(),
+                None,
+                1000,
+                Duration::from_secs(1),
+            );
+            time::sleep(Duration::from_secs(2)).await;
+            assert_eq!(output.load(Ordering::SeqCst), 7);
+        });
+    }
+
+    #[test]
+    fn graceful_shutdown_preempted_by_kill() {
+        let runtime = Runtime::new();
+
+        let starts = Arc::new(AtomicUsize::new(0));
+        let starts_ = starts.clone();
+        let node = runtime
+            .create_node()
+            .init(move || {
+                starts_.fetch_add(1, Ordering::SeqCst);
+                std::future::pending::<()>()
+            })
+            .build();
+
+        runtime.block_on(async move {
+            let handle = Handle::current();
+            handle.begin_graceful_shutdown(
+                node.id(),
+                Some(Duration::from_secs(1)),
+                1000,
+                Duration::from_millis(10),
+            );
+            handle.kill(node.id());
+            // The stale shutdown must not schedule a restart.
+            time::sleep(Duration::from_secs(3)).await;
+            assert_eq!(starts.load(Ordering::SeqCst), 1);
+            assert!(handle.task.shutting_down.lock().unwrap().is_empty());
         });
     }
 
