@@ -243,10 +243,16 @@ fn start_watchdog_with(
         let rt = &(*read).as_ref().unwrap();
         let mut prev_time = rt.handle.time.now_instant();
         let mut deadlock_count = 0;
-        loop {
-            std::thread::sleep(step);
-            if stop.try_recv().is_ok() {
-                break;
+        // The test joins this thread when it finishes, so sleep in short slices and check
+        // `stop` between them rather than sleeping a full `step`.
+        let slices = step.as_millis().div_ceil(50).max(1) as u32;
+        let slice = step / slices;
+        'outer: loop {
+            for _ in 0..slices {
+                std::thread::sleep(slice);
+                if stop.try_recv().is_ok() {
+                    break 'outer;
+                }
             }
 
             let now = rt.handle.time.now_instant();
@@ -622,5 +628,19 @@ mod tests {
         info!("deadlock detected successfully");
         // verify that the deadline was reset after we came back after the timer reset
         assert!(now.elapsed() > Duration::from_millis(1500));
+    }
+
+    #[test]
+    fn test_watchdog_stops_promptly() {
+        let runtime = Arc::new(RwLock::new(Some(Runtime::new())));
+        let (tx, rx) = channel();
+        let watchdog = start_watchdog_with(runtime, Duration::from_secs(60), rx, || {
+            panic!("unexpected deadlock");
+        });
+
+        let now = std::time::Instant::now();
+        tx.send(()).unwrap();
+        watchdog.join().unwrap();
+        assert!(now.elapsed() < Duration::from_secs(1));
     }
 }
